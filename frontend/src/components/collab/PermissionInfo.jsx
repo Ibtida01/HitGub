@@ -1,43 +1,21 @@
 import { Shield, Check, Minus } from 'lucide-react';
-import { ROLE_PERMISSIONS, Role } from '../../types';
+import { ROLE_PERMISSIONS } from '../../types/index.js';
 
-const ALL_ROLES: Role[] = ['owner', 'maintainer', 'contributor', 'read-only'];
+const ALL_ROLES = ['owner', 'contributor', 'read-only'];
 
-const ROLE_LABELS: Record<Role, string> = {
+const ROLE_LABELS = {
   owner: 'Owner',
-  maintainer: 'Maintainer',
   contributor: 'Contributor',
   'read-only': 'Read-only',
 };
 
-const ROLE_COLORS: Record<Role, string> = {
+const ROLE_COLORS = {
   owner: 'text-purple-400 bg-purple-400/10',
-  maintainer: 'text-blue-400 bg-blue-400/10',
   contributor: 'text-green-400 bg-green-400/10',
   'read-only': 'text-gh-text-secondary bg-gh-overlay',
 };
 
-const ALL_PERMISSIONS = [
-  'Full repository access',
-  'Manage collaborators & permissions',
-  'Change repository settings',
-  'Delete repository',
-  'Manage branches & protection rules',
-  'Push to protected branches',
-  'Merge pull requests',
-  'Push to all branches',
-  'Manage branches',
-  'Invite contributors & read-only users',
-  'Manage issues & labels',
-  'Push to non-protected branches',
-  'Create pull requests',
-  'Create and manage own issues',
-  'Comment on pull requests & issues',
-  'View repository contents',
-  'Clone repository',
-  'Comment on issues',
-  'View pull requests',
-];
+const ALL_PERMISSIONS = [...new Set(ALL_ROLES.flatMap((r) => ROLE_PERMISSIONS[r]))];
 
 export function PermissionInfo() {
   return (
@@ -48,7 +26,10 @@ export function PermissionInfo() {
           Permission levels
         </h2>
         <p className="text-sm text-gh-text-secondary mt-0.5">
-          Each role grants a different level of access to the repository.
+          Schema roles: <code className="text-gh-accent">owner</code>,{' '}
+          <code className="text-gh-accent">contributor</code>,{' '}
+          <code className="text-gh-accent">read-only</code> (see{' '}
+          <code className="text-gh-text-muted">database/init.sql</code>).
         </p>
       </div>
 

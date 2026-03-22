@@ -1,9 +1,3 @@
-interface AvatarProps {
-  username: string;
-  avatarUrl?: string | null;
-  size?: 'sm' | 'md' | 'lg';
-}
-
 const BG_COLORS = [
   'bg-blue-500',
   'bg-emerald-500',
@@ -15,7 +9,7 @@ const BG_COLORS = [
   'bg-cyan-500',
 ];
 
-function hashUsername(name: string): number {
+function hashUsername(name) {
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -29,7 +23,7 @@ const SIZE_CLASSES = {
   lg: 'w-10 h-10 text-base',
 };
 
-export function Avatar({ username, avatarUrl, size = 'md' }: AvatarProps) {
+export function Avatar({ username, avatarUrl, size = 'md' }) {
   if (avatarUrl) {
     return (
       <img

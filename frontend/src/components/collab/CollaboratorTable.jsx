@@ -1,20 +1,12 @@
 import { useState } from 'react';
 import { Trash2, MoreHorizontal, Check } from 'lucide-react';
-import { Collaborator, Role, ROLE_LEVEL, ASSIGNABLE_ROLES } from '../../types';
-import { Avatar } from './Avatar';
-import { RoleBadge } from './RoleBadge';
-import { StatusBadge } from './StatusBadge';
-import { ConfirmDialog } from './ConfirmDialog';
+import { ASSIGNABLE_ROLES } from '../../types/index.js';
+import { Avatar } from './Avatar.jsx';
+import { RoleBadge } from './RoleBadge.jsx';
+import { StatusBadge } from './StatusBadge.jsx';
+import { ConfirmDialog } from './ConfirmDialog.jsx';
 
-interface CollaboratorTableProps {
-  collaborators: Collaborator[];
-  currentUserRole: Role;
-  currentUserId: number;
-  onRoleChange: (collabId: number, newRole: Role) => Promise<void>;
-  onRemove: (collabId: number) => Promise<void>;
-}
-
-function timeAgo(dateStr: string): string {
+function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';
@@ -32,18 +24,18 @@ export function CollaboratorTable({
   currentUserId,
   onRoleChange,
   onRemove,
-}: CollaboratorTableProps) {
-  const [removeTarget, setRemoveTarget] = useState<Collaborator | null>(null);
-  const [actionLoading, setActionLoading] = useState<number | null>(null);
-  const [openMenu, setOpenMenu] = useState<number | null>(null);
+}) {
+  const [removeTarget, setRemoveTarget] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
+  const [openMenu, setOpenMenu] = useState(null);
 
-  const canManage = (target: Collaborator): boolean => {
+  const canManage = (target) => {
     if (target.role === 'owner') return false;
     if (target.user_id === currentUserId) return false;
-    return ROLE_LEVEL[target.role] > ROLE_LEVEL[currentUserRole];
+    return currentUserRole === 'owner';
   };
 
-  const handleRoleChange = async (collabId: number, newRole: Role) => {
+  const handleRoleChange = async (collabId, newRole) => {
     setActionLoading(collabId);
     try {
       await onRoleChange(collabId, newRole);
@@ -105,7 +97,7 @@ export function CollaboratorTable({
                   <span>&middot;</span>
                   <span>
                     {collab.status === 'accepted'
-                      ? `Joined ${timeAgo(collab.accepted_at!)}`
+                      ? `Joined ${timeAgo(collab.accepted_at)}`
                       : `Invited ${timeAgo(collab.invited_at)}`}
                   </span>
                 </div>
@@ -118,8 +110,11 @@ export function CollaboratorTable({
                 {manageable && (
                   <div className="relative">
                     <button
+                      type="button"
                       onClick={() =>
-                        setOpenMenu(openMenu === collab.collaboration_id ? null : collab.collaboration_id)
+                        setOpenMenu(
+                          openMenu === collab.collaboration_id ? null : collab.collaboration_id
+                        )
                       }
                       className="p-1.5 rounded-md hover:bg-gh-border text-gh-text-secondary transition-colors"
                     >
@@ -130,6 +125,7 @@ export function CollaboratorTable({
                       <>
                         <div
                           className="fixed inset-0 z-10"
+                          aria-hidden="true"
                           onClick={() => setOpenMenu(null)}
                         />
                         <div className="absolute right-0 top-full mt-1 z-20 bg-gh-canvas-subtle border border-gh-border rounded-lg shadow-xl shadow-black/40 py-1 w-52">
@@ -139,8 +135,9 @@ export function CollaboratorTable({
                             </p>
                           </div>
                           <div className="py-1">
-                            {ASSIGNABLE_ROLES[currentUserRole].map((r) => (
+                            {(ASSIGNABLE_ROLES[currentUserRole] || []).map((r) => (
                               <button
+                                type="button"
                                 key={r}
                                 onClick={() => {
                                   setOpenMenu(null);
@@ -161,6 +158,7 @@ export function CollaboratorTable({
                           </div>
                           <div className="border-t border-gh-border-muted pt-1">
                             <button
+                              type="button"
                               onClick={() => {
                                 setOpenMenu(null);
                                 setRemoveTarget(collab);

@@ -1,15 +1,5 @@
 import { AlertTriangle, X } from 'lucide-react';
 
-interface ConfirmDialogProps {
-  isOpen: boolean;
-  title: string;
-  message: string;
-  confirmLabel?: string;
-  variant?: 'danger' | 'primary';
-  onConfirm: () => void;
-  onCancel: () => void;
-}
-
 export function ConfirmDialog({
   isOpen,
   title,
@@ -18,7 +8,7 @@ export function ConfirmDialog({
   variant = 'danger',
   onConfirm,
   onCancel,
-}: ConfirmDialogProps) {
+}) {
   if (!isOpen) return null;
 
   const btnClass =
@@ -28,9 +18,10 @@ export function ConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/70" onClick={onCancel} />
+      <div className="fixed inset-0 bg-black/70" onClick={onCancel} aria-hidden="true" />
       <div className="relative bg-gh-canvas-subtle border border-gh-border rounded-xl shadow-xl shadow-black/40 max-w-md w-full p-6">
         <button
+          type="button"
           onClick={onCancel}
           className="absolute top-4 right-4 text-gh-text-muted hover:text-gh-text-secondary"
         >
@@ -51,12 +42,14 @@ export function ConfirmDialog({
 
         <div className="mt-5 flex justify-end gap-2">
           <button
+            type="button"
             onClick={onCancel}
             className="px-3 py-1.5 text-sm font-medium border border-gh-border rounded-md text-gh-text hover:bg-gh-overlay focus:outline-none focus:ring-2 focus:ring-gh-border"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={onConfirm}
             className={`px-3 py-1.5 text-sm font-medium text-white rounded-md focus:outline-none focus:ring-2 ${btnClass}`}
           >

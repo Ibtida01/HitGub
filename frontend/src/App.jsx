@@ -7,11 +7,9 @@ import {
   PermissionInfo,
   Avatar,
 } from './components/collab';
-import { mockUsers, mockRepositories } from './mock/data';
+import { mockUsers, mockRepositories } from './mock/data.js';
 
-type View = 'manage' | 'invitations' | 'permissions';
-
-const NAV_ITEMS: { key: View; label: string; Icon: typeof Users }[] = [
+const NAV_ITEMS = [
   { key: 'manage', label: 'Manage Access', Icon: Users },
   { key: 'invitations', label: 'My Invitations', Icon: Inbox },
   { key: 'permissions', label: 'Permissions', Icon: Shield },
@@ -20,16 +18,15 @@ const NAV_ITEMS: { key: View; label: string; Icon: typeof Users }[] = [
 export default function App() {
   const [currentUserId, setCurrentUserId] = useState(1);
   const [selectedRepoId, setSelectedRepoId] = useState(1);
-  const [activeView, setActiveView] = useState<View>('manage');
+  const [activeView, setActiveView] = useState('manage');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
 
-  const currentUser = mockUsers.find((u) => u.user_id === currentUserId)!;
-  const selectedRepo = mockRepositories.find((r) => r.repository_id === selectedRepoId)!;
+  const currentUser = mockUsers.find((u) => u.user_id === currentUserId);
+  const selectedRepo = mockRepositories.find((r) => r.repository_id === selectedRepoId);
 
   return (
     <div className="min-h-screen bg-gh-canvas">
-      {/* Top navbar */}
       <header className="bg-gh-canvas-inset border-b border-gh-border sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
           <div className="flex items-center gap-2 font-bold text-lg text-gh-text">
@@ -39,9 +36,9 @@ export default function App() {
 
           <div className="flex-1" />
 
-          {/* Repo selector */}
           <div className="relative">
             <button
+              type="button"
               onClick={() => {
                 setRepoMenuOpen(!repoMenuOpen);
                 setUserMenuOpen(false);
@@ -49,18 +46,20 @@ export default function App() {
               className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm hover:bg-white/10 transition-colors"
             >
               <span className="text-gh-text-muted">Repo:</span>
-              <span className="font-medium text-gh-text">{selectedRepo.name}</span>
+              <span className="font-medium text-gh-text">{selectedRepo?.name}</span>
               <ChevronDown size={14} className="text-gh-text-muted" />
             </button>
             {repoMenuOpen && (
               <>
                 <div
                   className="fixed inset-0 z-10"
+                  aria-hidden="true"
                   onClick={() => setRepoMenuOpen(false)}
                 />
                 <div className="absolute right-0 top-full mt-1 z-20 bg-gh-canvas-subtle border border-gh-border rounded-lg shadow-xl shadow-black/40 py-1 w-56">
                   {mockRepositories.map((repo) => (
                     <button
+                      type="button"
                       key={repo.repository_id}
                       onClick={() => {
                         setSelectedRepoId(repo.repository_id);
@@ -84,12 +83,11 @@ export default function App() {
             )}
           </div>
 
-          {/* Notification bell */}
           <NotificationDropdown currentUserId={currentUserId} />
 
-          {/* User selector */}
           <div className="relative">
             <button
+              type="button"
               onClick={() => {
                 setUserMenuOpen(!userMenuOpen);
                 setRepoMenuOpen(false);
@@ -97,17 +95,18 @@ export default function App() {
               className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 transition-colors"
             >
               <Avatar
-                username={currentUser.username}
-                avatarUrl={currentUser.avatar_url}
+                username={currentUser?.username ?? ''}
+                avatarUrl={currentUser?.avatar_url}
                 size="sm"
               />
-              <span className="text-sm font-medium text-gh-text">{currentUser.username}</span>
+              <span className="text-sm font-medium text-gh-text">{currentUser?.username}</span>
               <ChevronDown size={14} className="text-gh-text-muted" />
             </button>
             {userMenuOpen && (
               <>
                 <div
                   className="fixed inset-0 z-10"
+                  aria-hidden="true"
                   onClick={() => setUserMenuOpen(false)}
                 />
                 <div className="absolute right-0 top-full mt-1 z-20 bg-gh-canvas-subtle border border-gh-border rounded-lg shadow-xl shadow-black/40 py-1 w-64">
@@ -116,6 +115,7 @@ export default function App() {
                   </p>
                   {mockUsers.map((user) => (
                     <button
+                      type="button"
                       key={user.user_id}
                       onClick={() => {
                         setCurrentUserId(user.user_id);
@@ -145,36 +145,35 @@ export default function App() {
         </div>
       </header>
 
-      {/* Repo context bar */}
       <div className="bg-gh-canvas-subtle border-b border-gh-border">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center gap-2 py-3 text-sm">
             <Avatar
               username={
-                mockUsers.find((u) => u.user_id === selectedRepo.owner_id)?.username ?? ''
+                mockUsers.find((u) => u.user_id === selectedRepo?.owner_id)?.username ?? ''
               }
               size="sm"
             />
             <span className="text-gh-text-secondary">
-              {mockUsers.find((u) => u.user_id === selectedRepo.owner_id)?.username}
+              {mockUsers.find((u) => u.user_id === selectedRepo?.owner_id)?.username}
             </span>
             <span className="text-gh-text-muted">/</span>
             <span className="font-semibold text-gh-accent hover:underline cursor-pointer">
-              {selectedRepo.name}
+              {selectedRepo?.name}
             </span>
             <span className="text-xs border border-gh-border text-gh-text-secondary rounded-full px-2 py-0.5 ml-1">
-              {selectedRepo.visibility}
+              {selectedRepo?.visibility}
             </span>
           </div>
         </div>
       </div>
 
-      {/* View tabs */}
       <div className="bg-gh-canvas-subtle border-b border-gh-border">
         <div className="max-w-7xl mx-auto px-4">
           <nav className="flex gap-1 -mb-px">
             {NAV_ITEMS.map(({ key, label, Icon }) => (
               <button
+                type="button"
                 key={key}
                 onClick={() => setActiveView(key)}
                 className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
@@ -191,7 +190,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 py-6">
         {activeView === 'manage' && (
           <CollaboratorSettings
@@ -201,10 +199,7 @@ export default function App() {
           />
         )}
         {activeView === 'invitations' && (
-          <PendingInvitations
-            key={currentUserId}
-            currentUserId={currentUserId}
-          />
+          <PendingInvitations key={currentUserId} currentUserId={currentUserId} />
         )}
         {activeView === 'permissions' && <PermissionInfo />}
       </main>

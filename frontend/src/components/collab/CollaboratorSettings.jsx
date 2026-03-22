@@ -1,41 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
 import { UserPlus, Search, Filter, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
-import { Collaborator, Role } from '../../types';
-import { collabApi } from '../../services/collabApi';
-import { CollaboratorTable } from './CollaboratorTable';
-import { InviteModal } from './InviteModal';
+import { collabApi } from '../../services/collabApi.js';
+import { CollaboratorTable } from './CollaboratorTable.jsx';
+import { InviteModal } from './InviteModal.jsx';
 
-interface CollaboratorSettingsProps {
-  repoId: number;
-  currentUserId: number;
-}
-
-type FilterTab = 'all' | Role | 'pending';
-
-const FILTER_TABS: { key: FilterTab; label: string }[] = [
+const FILTER_TABS = [
   { key: 'all', label: 'All' },
   { key: 'owner', label: 'Owners' },
-  { key: 'maintainer', label: 'Maintainers' },
   { key: 'contributor', label: 'Contributors' },
   { key: 'read-only', label: 'Read-only' },
   { key: 'pending', label: 'Pending' },
 ];
 
-interface Toast {
-  type: 'success' | 'error';
-  message: string;
-}
-
-export function CollaboratorSettings({ repoId, currentUserId }: CollaboratorSettingsProps) {
-  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
+export function CollaboratorSettings({ repoId, currentUserId }) {
+  const [collaborators, setCollaborators] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserRole, setCurrentUserRole] = useState<Role | null>(null);
+  const [currentUserRole, setCurrentUserRole] = useState(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeFilter, setActiveFilter] = useState<FilterTab>('all');
-  const [toast, setToast] = useState<Toast | null>(null);
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [toast, setToast] = useState(null);
 
-  const showToast = useCallback((type: Toast['type'], message: string) => {
+  const showToast = useCallback((type, message) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 3000);
   }, []);
@@ -60,25 +46,25 @@ export function CollaboratorSettings({ repoId, currentUserId }: CollaboratorSett
     fetchData();
   }, [fetchData]);
 
-  const handleInvite = async (userId: number, role: Role) => {
+  const handleInvite = async (userId, role) => {
     await collabApi.inviteCollaborator(repoId, userId, role, currentUserId);
     showToast('success', 'Invitation sent successfully');
     await fetchData();
   };
 
-  const handleRoleChange = async (collabId: number, newRole: Role) => {
+  const handleRoleChange = async (collabId, newRole) => {
     await collabApi.updateRole(collabId, newRole);
     showToast('success', 'Role updated successfully');
     await fetchData();
   };
 
-  const handleRemove = async (collabId: number) => {
+  const handleRemove = async (collabId) => {
     await collabApi.removeCollaborator(collabId);
     showToast('success', 'Collaborator removed');
     await fetchData();
   };
 
-  const canInvite = currentUserRole === 'owner' || currentUserRole === 'maintainer';
+  const canInvite = currentUserRole === 'owner';
 
   const filtered = collaborators.filter((c) => {
     if (searchQuery) {
@@ -110,7 +96,9 @@ export function CollaboratorSettings({ repoId, currentUserId }: CollaboratorSett
     return (
       <div className="text-center py-16">
         <AlertCircle size={32} className="mx-auto text-gh-text-muted mb-2" />
-        <p className="text-sm text-gh-text-secondary">You don't have access to manage collaborators for this repository.</p>
+        <p className="text-sm text-gh-text-secondary">
+          You don&apos;t have access to manage collaborators for this repository.
+        </p>
       </div>
     );
   }
@@ -132,11 +120,13 @@ export function CollaboratorSettings({ repoId, currentUserId }: CollaboratorSett
         <div>
           <h2 className="text-xl font-semibold text-gh-text">Manage access</h2>
           <p className="text-sm text-gh-text-secondary mt-0.5">
-            {collaborators.length} collaborator{collaborators.length !== 1 ? 's' : ''} have access to this repository
+            {collaborators.length} collaborator{collaborators.length !== 1 ? 's' : ''} have access
+            to this repository
           </p>
         </div>
         {canInvite && (
           <button
+            type="button"
             onClick={() => setInviteOpen(true)}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gh-success-em rounded-lg hover:bg-gh-success transition-colors shadow-sm"
           >
@@ -173,6 +163,7 @@ export function CollaboratorSettings({ repoId, currentUserId }: CollaboratorSett
 
             return (
               <button
+                type="button"
                 key={tab.key}
                 onClick={() => setActiveFilter(tab.key)}
                 className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
@@ -184,9 +175,7 @@ export function CollaboratorSettings({ repoId, currentUserId }: CollaboratorSett
                 {tab.label}
                 {count > 0 && (
                   <span
-                    className={`ml-1.5 ${
-                      isActive ? 'text-blue-200' : 'text-gh-text-muted'
-                    }`}
+                    className={`ml-1.5 ${isActive ? 'text-blue-200' : 'text-gh-text-muted'}`}
                   >
                     {count}
                   </span>

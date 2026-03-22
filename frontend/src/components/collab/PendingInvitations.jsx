@@ -1,16 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Loader2, Inbox, Check, X, GitBranch, Lock, Globe } from 'lucide-react';
-import { Collaborator } from '../../types';
-import { collabApi } from '../../services/collabApi';
-import { Avatar } from './Avatar';
-import { RoleBadge } from './RoleBadge';
+import { collabApi } from '../../services/collabApi.js';
+import { Avatar } from './Avatar.jsx';
+import { RoleBadge } from './RoleBadge.jsx';
 
-interface PendingInvitationsProps {
-  currentUserId: number;
-  onRespond?: () => void;
-}
-
-function timeAgo(dateStr: string): string {
+function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';
@@ -22,12 +16,12 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-export function PendingInvitations({ currentUserId, onRespond }: PendingInvitationsProps) {
-  const [invitations, setInvitations] = useState<Collaborator[]>([]);
+export function PendingInvitations({ currentUserId, onRespond }) {
+  const [invitations, setInvitations] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [respondingTo, setRespondingTo] = useState<number | null>(null);
+  const [respondingTo, setRespondingTo] = useState(null);
 
-  const fetch = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await collabApi.getPendingInvitations(currentUserId);
@@ -40,14 +34,14 @@ export function PendingInvitations({ currentUserId, onRespond }: PendingInvitati
   }, [currentUserId]);
 
   useEffect(() => {
-    fetch();
-  }, [fetch]);
+    load();
+  }, [load]);
 
-  const handleRespond = async (collabId: number, accept: boolean) => {
+  const handleRespond = async (collabId, accept) => {
     setRespondingTo(collabId);
     try {
       await collabApi.respondToInvitation(collabId, accept);
-      await fetch();
+      await load();
       onRespond?.();
     } finally {
       setRespondingTo(null);
@@ -139,6 +133,7 @@ export function PendingInvitations({ currentUserId, onRespond }: PendingInvitati
 
                   <div className="flex items-center gap-2 shrink-0">
                     <button
+                      type="button"
                       onClick={() => handleRespond(inv.collaboration_id, false)}
                       disabled={isResponding}
                       className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium border border-gh-border text-gh-text rounded-md hover:bg-gh-overlay disabled:opacity-50 transition-colors"
@@ -147,6 +142,7 @@ export function PendingInvitations({ currentUserId, onRespond }: PendingInvitati
                       Decline
                     </button>
                     <button
+                      type="button"
                       onClick={() => handleRespond(inv.collaboration_id, true)}
                       disabled={isResponding}
                       className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-white bg-gh-success-em rounded-md hover:bg-gh-success disabled:opacity-50 transition-colors"

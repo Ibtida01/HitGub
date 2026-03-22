@@ -1,20 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Search, UserPlus, Loader2 } from 'lucide-react';
-import { Role, User, ASSIGNABLE_ROLES } from '../../types';
-import { collabApi } from '../../services/collabApi';
-import { Avatar } from './Avatar';
+import { ASSIGNABLE_ROLES } from '../../types/index.js';
+import { collabApi } from '../../services/collabApi.js';
+import { Avatar } from './Avatar.jsx';
 
-interface InviteModalProps {
-  isOpen: boolean;
-  currentUserRole: Role;
-  existingUserIds: number[];
-  onInvite: (userId: number, role: Role) => Promise<void>;
-  onClose: () => void;
-}
-
-const ROLE_LABELS: Record<Role, string> = {
+const ROLE_LABELS = {
   owner: 'Owner',
-  maintainer: 'Maintainer',
   contributor: 'Contributor',
   'read-only': 'Read-only',
 };
@@ -25,18 +16,18 @@ export function InviteModal({
   existingUserIds,
   onInvite,
   onClose,
-}: InviteModalProps) {
+}) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<User[]>([]);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [role, setRole] = useState<Role>('contributor');
+  const [results, setResults] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [role, setRole] = useState('contributor');
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const inputRef = useRef(null);
+  const debounceRef = useRef(null);
 
-  const assignableRoles = ASSIGNABLE_ROLES[currentUserRole];
+  const assignableRoles = ASSIGNABLE_ROLES[currentUserRole] || [];
 
   useEffect(() => {
     if (isOpen) {
@@ -49,30 +40,27 @@ export function InviteModal({
     }
   }, [isOpen]);
 
-  const handleSearch = useCallback(
-    (q: string) => {
-      setQuery(q);
-      setError('');
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      if (!q.trim()) {
+  const handleSearch = useCallback((q) => {
+    setQuery(q);
+    setError('');
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q.trim()) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const users = await collabApi.searchUsers(q);
+        setResults(users);
+      } catch {
         setResults([]);
+      } finally {
         setSearching(false);
-        return;
       }
-      setSearching(true);
-      debounceRef.current = setTimeout(async () => {
-        try {
-          const users = await collabApi.searchUsers(q);
-          setResults(users);
-        } catch {
-          setResults([]);
-        } finally {
-          setSearching(false);
-        }
-      }, 300);
-    },
-    []
-  );
+    }, 300);
+  }, []);
 
   const handleSubmit = async () => {
     if (!selectedUser) return;
@@ -92,7 +80,7 @@ export function InviteModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] p-4">
-      <div className="fixed inset-0 bg-black/70" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/70" onClick={onClose} aria-hidden="true" />
       <div className="relative bg-gh-canvas-subtle border border-gh-border rounded-xl shadow-xl shadow-black/40 max-w-lg w-full">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gh-border">
           <h2 className="text-base font-semibold text-gh-text flex items-center gap-2">
@@ -100,6 +88,7 @@ export function InviteModal({
             Invite a collaborator
           </h2>
           <button
+            type="button"
             onClick={onClose}
             className="text-gh-text-muted hover:text-gh-text-secondary p-1"
           >
@@ -137,6 +126,7 @@ export function InviteModal({
                     const alreadyAdded = existingUserIds.includes(user.user_id);
                     return (
                       <button
+                        type="button"
                         key={user.user_id}
                         disabled={alreadyAdded}
                         onClick={() => setSelectedUser(user)}
@@ -166,7 +156,7 @@ export function InviteModal({
 
               {query.trim() && !searching && results.length === 0 && (
                 <p className="text-sm text-gh-text-secondary text-center py-4">
-                  No users found matching "{query}"
+                  No users found matching &quot;{query}&quot;
                 </p>
               )}
             </>
@@ -185,6 +175,7 @@ export function InviteModal({
                   <div className="text-sm text-gh-text-secondary">@{selectedUser.username}</div>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setSelectedUser(null)}
                   className="text-gh-text-muted hover:text-gh-text-secondary p-1"
                 >
@@ -193,12 +184,10 @@ export function InviteModal({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gh-text mb-1.5">
-                  Role
-                </label>
+                <label className="block text-sm font-medium text-gh-text mb-1.5">Role</label>
                 <select
                   value={role}
-                  onChange={(e) => setRole(e.target.value as Role)}
+                  onChange={(e) => setRole(e.target.value)}
                   className="w-full border border-gh-border rounded-lg px-3 py-2 text-sm bg-gh-canvas text-gh-text focus:outline-none focus:ring-2 focus:ring-gh-accent focus:border-gh-accent"
                 >
                   {assignableRoles.map((r) => (
@@ -218,12 +207,14 @@ export function InviteModal({
 
         <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gh-border bg-gh-canvas-subtle rounded-b-xl">
           <button
+            type="button"
             onClick={onClose}
             className="px-3 py-1.5 text-sm font-medium border border-gh-border rounded-md text-gh-text hover:bg-gh-overlay"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleSubmit}
             disabled={!selectedUser || submitting}
             className="px-4 py-1.5 text-sm font-medium text-white bg-gh-success-em rounded-md hover:bg-gh-success disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"

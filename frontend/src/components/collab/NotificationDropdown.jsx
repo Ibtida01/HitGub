@@ -8,17 +8,9 @@ import {
   XCircle,
   CheckCheck,
 } from 'lucide-react';
-import { CollabNotification } from '../../types';
-import { collabApi } from '../../services/collabApi';
+import { collabApi } from '../../services/collabApi.js';
 
-interface NotificationDropdownProps {
-  currentUserId: number;
-}
-
-const TYPE_CONFIG: Record<
-  CollabNotification['type'],
-  { Icon: typeof Bell; color: string }
-> = {
+const TYPE_CONFIG = {
   invitation: { Icon: UserPlus, color: 'text-gh-accent' },
   role_change: { Icon: ArrowRightLeft, color: 'text-gh-warning' },
   removed: { Icon: UserMinus, color: 'text-gh-danger' },
@@ -26,7 +18,7 @@ const TYPE_CONFIG: Record<
   declined: { Icon: XCircle, color: 'text-gh-text-secondary' },
 };
 
-function timeAgo(dateStr: string): string {
+function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';
@@ -38,10 +30,10 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-export function NotificationDropdown({ currentUserId }: NotificationDropdownProps) {
-  const [notifications, setNotifications] = useState<CollabNotification[]>([]);
+export function NotificationDropdown({ currentUserId }) {
+  const [notifications, setNotifications] = useState([]);
   const [open, setOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef(null);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -59,8 +51,8 @@ export function NotificationDropdown({ currentUserId }: NotificationDropdownProp
   }, [fetchNotifications]);
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
         setOpen(false);
       }
     };
@@ -75,7 +67,7 @@ export function NotificationDropdown({ currentUserId }: NotificationDropdownProp
     await fetchNotifications();
   };
 
-  const handleMarkRead = async (id: number) => {
+  const handleMarkRead = async (id) => {
     await collabApi.markNotificationRead(id);
     await fetchNotifications();
   };
@@ -83,6 +75,7 @@ export function NotificationDropdown({ currentUserId }: NotificationDropdownProp
   return (
     <div ref={dropdownRef} className="relative">
       <button
+        type="button"
         onClick={() => {
           setOpen(!open);
           if (!open) fetchNotifications();
@@ -103,6 +96,7 @@ export function NotificationDropdown({ currentUserId }: NotificationDropdownProp
             <h3 className="text-sm font-semibold text-gh-text">Notifications</h3>
             {unreadCount > 0 && (
               <button
+                type="button"
                 onClick={handleMarkAllRead}
                 className="flex items-center gap-1 text-xs text-gh-accent hover:text-gh-accent font-medium hover:underline"
               >
@@ -120,25 +114,23 @@ export function NotificationDropdown({ currentUserId }: NotificationDropdownProp
               </div>
             ) : (
               notifications.map((notif) => {
-                const { Icon, color } = TYPE_CONFIG[notif.type];
+                const cfg = TYPE_CONFIG[notif.type] ?? TYPE_CONFIG.invitation;
+                const Icon = cfg.Icon;
                 return (
                   <button
+                    type="button"
                     key={notif.id}
                     onClick={() => handleMarkRead(notif.id)}
                     className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gh-overlay transition-colors border-b border-gh-border-muted last:border-b-0 ${
                       !notif.read ? 'bg-gh-accent/5' : ''
                     }`}
                   >
-                    <div className={`mt-0.5 ${color}`}>
+                    <div className={`mt-0.5 ${cfg.color}`}>
                       <Icon size={16} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-gh-text leading-snug">
-                        {notif.message}
-                      </p>
-                      <p className="text-xs text-gh-text-muted mt-1">
-                        {timeAgo(notif.created_at)}
-                      </p>
+                      <p className="text-sm text-gh-text leading-snug">{notif.message}</p>
+                      <p className="text-xs text-gh-text-muted mt-1">{timeAgo(notif.created_at)}</p>
                     </div>
                     {!notif.read && (
                       <div className="mt-1.5 w-2 h-2 rounded-full bg-gh-accent shrink-0" />
