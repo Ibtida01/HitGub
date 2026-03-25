@@ -1,0 +1,21 @@
+services:
+  db:
+    build: ./database
+    container_name: hitgub-db
+    environment:
+      POSTGRES_DB: hitgub
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - hitgub-network
+
+volumes:
+  postgres_data:
+
+networks:
+  hitgub-network:
+    driver: bridge
