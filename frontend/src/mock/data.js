@@ -1,11 +1,21 @@
 let nextCollabId = 20;
 let nextNotifId = 20;
+let nextRepoId = 10;
+let nextBranchId = 30;
 
 export function getNextCollabId() {
   return nextCollabId++;
 }
 export function getNextNotifId() {
   return nextNotifId++;
+}
+
+export function getNextRepoId() {
+  return nextRepoId++;
+}
+
+export function getNextBranchId() {
+  return nextBranchId++;
 }
 
 export const mockUsers = [
@@ -21,6 +31,15 @@ export const mockRepositories = [
   { repository_id: 1, owner_id: 1, name: 'github-clone', description: 'Repository management and collaboration system', visibility: 'public', default_branch: 'main', is_initialized: true, has_readme: true, license_type: null, created_at: '2025-06-01T00:00:00Z', updated_at: '2025-06-01T00:00:00Z' },
   { repository_id: 2, owner_id: 1, name: 'demo-project', description: 'A demo project for testing', visibility: 'private', default_branch: 'main', is_initialized: true, has_readme: false, license_type: null, created_at: '2025-06-05T00:00:00Z', updated_at: '2025-06-05T00:00:00Z' },
   { repository_id: 3, owner_id: 2, name: 'sakif-portfolio', description: 'Personal portfolio website', visibility: 'public', default_branch: 'main', is_initialized: true, has_readme: true, license_type: null, created_at: '2025-06-10T00:00:00Z', updated_at: '2025-06-10T00:00:00Z' },
+];
+
+export const mockBranches = [
+  { branch_id: 1, repository_id: 1, name: 'main', is_protected: true, is_default: true, created_by: 1, created_at: '2025-06-01T00:00:00Z', last_commit_hash: 'a'.repeat(40), last_commit_at: '2025-06-22T13:10:00Z' },
+  { branch_id: 2, repository_id: 1, name: 'develop', is_protected: false, is_default: false, created_by: 1, created_at: '2025-06-03T00:00:00Z', last_commit_hash: 'b'.repeat(40), last_commit_at: '2025-06-20T11:00:00Z' },
+  { branch_id: 3, repository_id: 1, name: 'feature/auth-ui', is_protected: false, is_default: false, created_by: 3, created_at: '2025-06-07T00:00:00Z', last_commit_hash: 'c'.repeat(40), last_commit_at: '2025-06-18T16:45:00Z' },
+  { branch_id: 4, repository_id: 2, name: 'main', is_protected: false, is_default: true, created_by: 1, created_at: '2025-06-05T00:00:00Z', last_commit_hash: 'd'.repeat(40), last_commit_at: '2025-06-17T09:00:00Z' },
+  { branch_id: 5, repository_id: 2, name: 'release/v1', is_protected: true, is_default: false, created_by: 1, created_at: '2025-06-08T00:00:00Z', last_commit_hash: 'e'.repeat(40), last_commit_at: '2025-06-19T15:00:00Z' },
+  { branch_id: 6, repository_id: 3, name: 'main', is_protected: true, is_default: true, created_by: 2, created_at: '2025-06-10T00:00:00Z', last_commit_hash: 'f'.repeat(40), last_commit_at: '2025-06-21T12:25:00Z' },
 ];
 
 export const mockCollaborators = [

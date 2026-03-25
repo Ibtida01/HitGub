@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitBranch, Users, Inbox, Shield, ChevronDown } from 'lucide-react';
+import { GitBranch, Users, Inbox, Shield, ChevronDown, FolderGit2 } from 'lucide-react';
 import {
   CollaboratorSettings,
   PendingInvitations,
@@ -7,9 +7,11 @@ import {
   PermissionInfo,
   Avatar,
 } from './components/collab';
+import { RepositoryManagement } from './components/repo';
 import { mockUsers, mockRepositories } from './mock/data.js';
 
 const NAV_ITEMS = [
+  { key: 'repo', label: 'Repositories', Icon: FolderGit2 },
   { key: 'manage', label: 'Manage Access', Icon: Users },
   { key: 'invitations', label: 'My Invitations', Icon: Inbox },
   { key: 'permissions', label: 'Permissions', Icon: Shield },
@@ -18,12 +20,15 @@ const NAV_ITEMS = [
 export default function App() {
   const [currentUserId, setCurrentUserId] = useState(1);
   const [selectedRepoId, setSelectedRepoId] = useState(1);
-  const [activeView, setActiveView] = useState('manage');
+  const [activeView, setActiveView] = useState('repo');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
+  const [repoRevision, setRepoRevision] = useState(0);
+
+  const availableRepos = mockRepositories.filter((repo) => !repo.deleted_at);
 
   const currentUser = mockUsers.find((u) => u.user_id === currentUserId);
-  const selectedRepo = mockRepositories.find((r) => r.repository_id === selectedRepoId);
+  const selectedRepo = availableRepos.find((r) => r.repository_id === selectedRepoId);
 
   return (
     <div className="min-h-screen bg-gh-canvas">
@@ -57,7 +62,7 @@ export default function App() {
                   onClick={() => setRepoMenuOpen(false)}
                 />
                 <div className="absolute right-0 top-full mt-1 z-20 bg-gh-canvas-subtle border border-gh-border rounded-lg shadow-xl shadow-black/40 py-1 w-56">
-                  {mockRepositories.map((repo) => (
+                  {availableRepos.map((repo) => (
                     <button
                       type="button"
                       key={repo.repository_id}
@@ -191,6 +196,15 @@ export default function App() {
       </div>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
+        {activeView === 'repo' && (
+          <RepositoryManagement
+            key={`${selectedRepoId}-${currentUserId}-${repoRevision}`}
+            selectedRepoId={selectedRepoId}
+            currentUserId={currentUserId}
+            onSelectRepo={setSelectedRepoId}
+            onRepositoriesChanged={() => setRepoRevision((v) => v + 1)}
+          />
+        )}
         {activeView === 'manage' && (
           <CollaboratorSettings
             key={`${selectedRepoId}-${currentUserId}`}

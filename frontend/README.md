@@ -58,6 +58,7 @@ This installs everything listed in `package.json` (React, Vite, Tailwind, ESLint
    |----------|---------|----------------|
    | `VITE_API_URL` | Base URL of the **FastAPI** backend (when you connect real APIs) | `http://localhost:8000` |
    | `VITE_COLLAB_USE_MOCK` | If `true` (or unset), collaborator features use **in-memory mock data**. Set to `false` when backend routes exist and match `src/services/collabApi.js`. | `true` |
+   | `VITE_REPO_USE_MOCK` | If `true` (or unset), repository creation/config/branch features use **in-memory mock data**. Set to `false` when backend routes exist and match `src/services/repoApi.js`. | `true` |
 
 > **Note:** Only variables prefixed with `VITE_` are exposed to the browser. Restart the dev server after changing `.env`.
 
@@ -123,8 +124,12 @@ frontend/
 │   ├── mock/data.js        # Mock users/repos (used when mock API is on)
 │   ├── services/
 │   │   ├── collabApi.js    # Collaborator API (mock or HTTP)
-│   │   └── collabApiConfig.js
-│   └── components/collab/    # Collaborator management UI (main feature area)
+│   │   ├── collabApiConfig.js
+│   │   └── repoApi.js      # Repository management API (mock or HTTP)
+│   ├── components/collab/    # Collaborator management UI
+│   └── components/repo/      # Repository creation + branch/config management UI
+├── docs/
+│   └── repository-api-contract.md   # Backend handoff contract for repo endpoints
 └── README.md               # This file
 ```
 
