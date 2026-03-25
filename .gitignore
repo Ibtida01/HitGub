@@ -1,1 +1,4 @@
+*.pdf
+db.sql
+
 .venv
