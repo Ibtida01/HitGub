@@ -1,34 +1,91 @@
-import { useState } from 'react';
-import { GitBranch, Users, Inbox, Shield, ChevronDown, FolderGit2 } from 'lucide-react';
+import { useEffect, useState } from "react";
+import {
+  GitBranch,
+  Users,
+  Inbox,
+  Shield,
+  ChevronDown,
+  FolderGit2,
+} from "lucide-react";
 import {
   CollaboratorSettings,
   PendingInvitations,
   NotificationDropdown,
   PermissionInfo,
   Avatar,
-} from './components/collab';
-import { RepositoryManagement } from './components/repo';
-import { mockUsers, mockRepositories } from './mock/data.js';
+} from "./components/collab";
+import { RepositoryManagement } from "./components/repo";
+import { REPO_USE_MOCK, repoApi } from "./services/repoApi.js";
+import { mockUsers, mockRepositories } from "./mock/data.js";
 
 const NAV_ITEMS = [
-  { key: 'repo', label: 'Repositories', Icon: FolderGit2 },
-  { key: 'manage', label: 'Manage Access', Icon: Users },
-  { key: 'invitations', label: 'My Invitations', Icon: Inbox },
-  { key: 'permissions', label: 'Permissions', Icon: Shield },
+  { key: "repo", label: "Repositories", Icon: FolderGit2 },
+  { key: "manage", label: "Manage Access", Icon: Users },
+  { key: "invitations", label: "My Invitations", Icon: Inbox },
+  { key: "permissions", label: "Permissions", Icon: Shield },
 ];
 
 export default function App() {
   const [currentUserId, setCurrentUserId] = useState(1);
-  const [selectedRepoId, setSelectedRepoId] = useState(1);
-  const [activeView, setActiveView] = useState('repo');
+  const [selectedRepoId, setSelectedRepoId] = useState(null);
+  const [activeView, setActiveView] = useState("repo");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [repoRevision, setRepoRevision] = useState(0);
+  const [availableRepos, setAvailableRepos] = useState([]);
 
-  const availableRepos = mockRepositories.filter((repo) => !repo.deleted_at);
+  useEffect(() => {
+    let cancelled = false;
+
+    if (REPO_USE_MOCK) {
+      const repos = mockRepositories.filter((repo) => !repo.deleted_at);
+      if (!cancelled) {
+        setAvailableRepos(repos);
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    repoApi
+      .listRepositoriesForUser(currentUserId)
+      .then((repos) => {
+        if (!cancelled) {
+          setAvailableRepos(repos);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAvailableRepos([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, repoRevision]);
+
+  useEffect(() => {
+    if (availableRepos.length === 0) {
+      setSelectedRepoId(null);
+      return;
+    }
+
+    const stillExists = availableRepos.some(
+      (r) => r.repository_id === selectedRepoId,
+    );
+    if (!stillExists) {
+      setSelectedRepoId(availableRepos[0].repository_id);
+    }
+  }, [availableRepos, selectedRepoId]);
 
   const currentUser = mockUsers.find((u) => u.user_id === currentUserId);
-  const selectedRepo = availableRepos.find((r) => r.repository_id === selectedRepoId);
+  const selectedRepo = availableRepos.find(
+    (r) => r.repository_id === selectedRepoId,
+  );
+  const selectedRepoOwnerName =
+    selectedRepo?.owner?.username ??
+    mockUsers.find((u) => u.user_id === selectedRepo?.owner_id)?.username;
 
   return (
     <div className="min-h-screen bg-gh-canvas">
@@ -51,7 +108,9 @@ export default function App() {
               className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm hover:bg-white/10 transition-colors"
             >
               <span className="text-gh-text-muted">Repo:</span>
-              <span className="font-medium text-gh-text">{selectedRepo?.name}</span>
+              <span className="font-medium text-gh-text">
+                {selectedRepo?.name ?? "None"}
+              </span>
               <ChevronDown size={14} className="text-gh-text-muted" />
             </button>
             {repoMenuOpen && (
@@ -72,8 +131,8 @@ export default function App() {
                       }}
                       className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gh-overlay ${
                         repo.repository_id === selectedRepoId
-                          ? 'text-gh-accent font-medium bg-gh-accent/10'
-                          : 'text-gh-text'
+                          ? "text-gh-accent font-medium bg-gh-accent/10"
+                          : "text-gh-text"
                       }`}
                     >
                       <GitBranch size={14} />
@@ -83,6 +142,11 @@ export default function App() {
                       </span>
                     </button>
                   ))}
+                  {availableRepos.length === 0 && (
+                    <div className="px-3 py-2 text-sm text-gh-text-muted">
+                      No repositories found
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -100,11 +164,13 @@ export default function App() {
               className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 transition-colors"
             >
               <Avatar
-                username={currentUser?.username ?? ''}
+                username={currentUser?.username ?? ""}
                 avatarUrl={currentUser?.avatar_url}
                 size="sm"
               />
-              <span className="text-sm font-medium text-gh-text">{currentUser?.username}</span>
+              <span className="text-sm font-medium text-gh-text">
+                {currentUser?.username}
+              </span>
               <ChevronDown size={14} className="text-gh-text-muted" />
             </button>
             {userMenuOpen && (
@@ -128,8 +194,8 @@ export default function App() {
                       }}
                       className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-gh-overlay ${
                         user.user_id === currentUserId
-                          ? 'text-gh-accent font-medium bg-gh-accent/10'
-                          : 'text-gh-text'
+                          ? "text-gh-accent font-medium bg-gh-accent/10"
+                          : "text-gh-text"
                       }`}
                     >
                       <Avatar
@@ -139,7 +205,9 @@ export default function App() {
                       />
                       <div className="min-w-0">
                         <div className="truncate">{user.full_name}</div>
-                        <div className="text-xs text-gh-text-muted">@{user.username}</div>
+                        <div className="text-xs text-gh-text-muted">
+                          @{user.username}
+                        </div>
                       </div>
                     </button>
                   ))}
@@ -153,14 +221,9 @@ export default function App() {
       <div className="bg-gh-canvas-subtle border-b border-gh-border">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex items-center gap-2 py-3 text-sm">
-            <Avatar
-              username={
-                mockUsers.find((u) => u.user_id === selectedRepo?.owner_id)?.username ?? ''
-              }
-              size="sm"
-            />
+            <Avatar username={selectedRepoOwnerName ?? ""} size="sm" />
             <span className="text-gh-text-secondary">
-              {mockUsers.find((u) => u.user_id === selectedRepo?.owner_id)?.username}
+              {selectedRepoOwnerName}
             </span>
             <span className="text-gh-text-muted">/</span>
             <span className="font-semibold text-gh-accent hover:underline cursor-pointer">
@@ -183,8 +246,8 @@ export default function App() {
                 onClick={() => setActiveView(key)}
                 className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
                   activeView === key
-                    ? 'border-orange-500 text-gh-text'
-                    : 'border-transparent text-gh-text-secondary hover:text-gh-text hover:border-gh-border'
+                    ? "border-orange-500 text-gh-text"
+                    : "border-transparent text-gh-text-secondary hover:text-gh-text hover:border-gh-border"
                 }`}
               >
                 <Icon size={16} />
@@ -196,26 +259,35 @@ export default function App() {
       </div>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {activeView === 'repo' && (
-          <RepositoryManagement
-            key={`${selectedRepoId}-${currentUserId}-${repoRevision}`}
-            selectedRepoId={selectedRepoId}
-            currentUserId={currentUserId}
-            onSelectRepo={setSelectedRepoId}
-            onRepositoriesChanged={() => setRepoRevision((v) => v + 1)}
-          />
-        )}
-        {activeView === 'manage' && (
+        {activeView === "repo" &&
+          (selectedRepoId ? (
+            <RepositoryManagement
+              key={`${selectedRepoId}-${currentUserId}-${repoRevision}`}
+              selectedRepoId={selectedRepoId}
+              currentUserId={currentUserId}
+              onSelectRepo={setSelectedRepoId}
+              onRepositoriesChanged={() => setRepoRevision((v) => v + 1)}
+            />
+          ) : (
+            <div className="rounded-lg border border-gh-border bg-gh-canvas-subtle p-6 text-gh-text-muted">
+              No repository selected yet. Create a repository first, or pick one
+              from the repo dropdown.
+            </div>
+          ))}
+        {activeView === "manage" && (
           <CollaboratorSettings
             key={`${selectedRepoId}-${currentUserId}`}
             repoId={selectedRepoId}
             currentUserId={currentUserId}
           />
         )}
-        {activeView === 'invitations' && (
-          <PendingInvitations key={currentUserId} currentUserId={currentUserId} />
+        {activeView === "invitations" && (
+          <PendingInvitations
+            key={currentUserId}
+            currentUserId={currentUserId}
+          />
         )}
-        {activeView === 'permissions' && <PermissionInfo />}
+        {activeView === "permissions" && <PermissionInfo />}
       </main>
     </div>
   );

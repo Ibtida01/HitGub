@@ -61,7 +61,7 @@ from typing import Optional
 # ── optional .env support ────────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 except ImportError:
     pass  # python-dotenv is optional; env vars can be set any other way
 
@@ -202,11 +202,11 @@ class PyGit:
                        PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD.
         """
         self._cfg = db_config or {
-            "host":     os.getenv("PGHOST",     "localhost"),
-            "port":     int(os.getenv("PGPORT",  "5432")),
-            "dbname":   os.getenv("PGDATABASE", "github_clone"),
-            "user":     os.getenv("PGUSER",     "postgres"),
-            "password": os.getenv("PGPASSWORD", ""),
+            "host":     os.getenv("PGHOST",     "127.0.0.1"),
+            "port":     int(os.getenv("PGPORT",  "5433")),
+            "dbname":   os.getenv("PGDATABASE", "hitgub"),
+            "user":     os.getenv("PGUSER",     "myuser"),
+            "password": os.getenv("PGPASSWORD", "mypassword"),
         }
         self._conn = None
         self._connect()

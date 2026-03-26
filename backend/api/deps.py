@@ -1,8 +1,12 @@
-from fastapi import Header, HTTPException, Depends, Request
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    authorization: str = Header(..., description="Bearer <token> from /auth/login"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     request: Request = None,
 ) -> dict:
     """
@@ -14,13 +18,13 @@ async def get_current_user(
         async def my_route(current_user: dict = Depends(get_current_user)):
             uid = current_user["user_id"]
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=401,
             detail="Authorization header must be: Bearer <token>",
         )
 
-    token = authorization[7:].strip()
+    token = credentials.credentials.strip()
     if not token:
         raise HTTPException(status_code=401, detail="Token is empty")
 
