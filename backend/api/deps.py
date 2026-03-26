@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 from fastapi import Header, HTTPException, Request
 from typing import Optional
 
@@ -8,6 +9,18 @@ async def get_current_user(
         default=None,
         description="Bearer <token> from /auth/login",
     ),
+=======
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    request: Request = None,
+>>>>>>> 8a4218b2af8d6dba2c8b593647f9abef93392ee4
 ) -> dict:
     """
     Dependency that validates the Bearer token stored by /auth/login
@@ -25,13 +38,13 @@ async def get_current_user(
     We want a 401 instead, so we declare the header as optional and
     perform the "missing / malformed" check ourselves below.
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=401,
             detail="Authorization header must be: Bearer <token>",
         )
 
-    token = authorization[7:].strip()
+    token = credentials.credentials.strip()
     if not token:
         raise HTTPException(status_code=401, detail="Token is empty")
 
