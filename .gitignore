@@ -1,4 +1,4 @@
-*.pdf
-db.sql
-
+__pycache__/
+*.pyc
 .venv
+.env
