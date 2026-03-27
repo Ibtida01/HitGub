@@ -1,12 +1,35 @@
 import asyncpg
 import bcrypt
-import uuid
+import jwt
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from database.connection import get_db
 from ..model.user import Login, SignUp
 
 router = APIRouter()
+
+SECRET_KEY = "your-very-long-secret-key-at-least-32-chars" # move to env var in production
+ALGORITHM = "HS256"
+TOKEN_EXPIRE_HOURS = 1
+
+
+def _create_jwt(user_id: str) -> str:
+    expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
+    payload = {
+        "sub": str(user_id),
+        "exp": expire,
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _decode_jwt(token: str) -> dict:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 async def _ensure_auth_columns(db) -> None:
@@ -41,7 +64,6 @@ async def signup(signup: SignUp, db=Depends(get_db)):
         )
 
     return {"detail": "Signup successful"}
-    
 
 
 @router.post("/login")
@@ -59,17 +81,19 @@ async def login(data: Login, db=Depends(get_db)):
     if not bcrypt.checkpw(data.password.encode("utf-8"), user["password_hash"].encode("utf-8")):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    token = str(uuid.uuid4())
+    token = _create_jwt(user["user_id"])
+    expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
 
     await db.execute(
         """
         UPDATE users
         SET active_token = $1,
-            token_expires_at = NOW() + INTERVAL '1 hour',
+            token_expires_at = $2,
             is_active = TRUE
-        WHERE user_id = $2
+        WHERE user_id = $3
         """,
         token,
+        expire,
         user["user_id"],
     )
 
