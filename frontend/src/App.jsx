@@ -18,6 +18,12 @@ import { RepositoryManagement } from "./components/repo";
 import { REPO_USE_MOCK, repoApi } from "./services/repoApi.js";
 import { mockUsers, mockRepositories } from "./mock/data.js";
 
+import { getAuthToken } from "./services/collabApiConfig";
+import { logout as apiLogout } from "./services/authApi";
+import Login from "./components/auth/Login";
+import Signup from "./components/auth/Signup";
+
+
 const NAV_ITEMS = [
   { key: "repo", label: "Repositories", Icon: FolderGit2 },
   { key: "manage", label: "Manage Access", Icon: Users },
@@ -33,7 +39,8 @@ export default function App() {
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [repoRevision, setRepoRevision] = useState(0);
   const [availableRepos, setAvailableRepos] = useState([]);
-
+  const [authToken, setAuthToken] = useState(() => getAuthToken());
+  const [authMode, setAuthMode] = useState('login');
   useEffect(() => {
     let cancelled = false;
 
@@ -87,6 +94,32 @@ export default function App() {
     selectedRepo?.owner?.username ??
     mockUsers.find((u) => u.user_id === selectedRepo?.owner_id)?.username;
 
+  const handleLogout = async () => {
+    await apiLogout();
+    setAuthToken(null);
+    setAuthMode('login');
+    setUserMenuOpen(false);
+  };
+
+  if (!authToken) {
+    return authMode === 'login' ? (
+      <Login
+        onAuthSuccess={() => {
+          setAuthToken(getAuthToken());
+          // user will see RepositoryManagement as default view
+        }}
+        switchToSignup={() => setAuthMode('signup')}
+      />
+    ) : (
+      <Signup
+        onAuthSuccess={() => {
+          setAuthToken(getAuthToken());
+        }}
+        switchToLogin={() => setAuthMode('login')}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gh-canvas">
       <header className="bg-gh-canvas-inset border-b border-gh-border sticky top-0 z-40">
@@ -129,11 +162,10 @@ export default function App() {
                         setSelectedRepoId(repo.repository_id);
                         setRepoMenuOpen(false);
                       }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gh-overlay ${
-                        repo.repository_id === selectedRepoId
-                          ? "text-gh-accent font-medium bg-gh-accent/10"
-                          : "text-gh-text"
-                      }`}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gh-overlay ${repo.repository_id === selectedRepoId
+                        ? "text-gh-accent font-medium bg-gh-accent/10"
+                        : "text-gh-text"
+                        }`}
                     >
                       <GitBranch size={14} />
                       <span className="truncate">{repo.name}</span>
@@ -192,11 +224,10 @@ export default function App() {
                         setCurrentUserId(user.user_id);
                         setUserMenuOpen(false);
                       }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-gh-overlay ${
-                        user.user_id === currentUserId
-                          ? "text-gh-accent font-medium bg-gh-accent/10"
-                          : "text-gh-text"
-                      }`}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-gh-overlay ${user.user_id === currentUserId
+                        ? "text-gh-accent font-medium bg-gh-accent/10"
+                        : "text-gh-text"
+                        }`}
                     >
                       <Avatar
                         username={user.username}
@@ -211,6 +242,15 @@ export default function App() {
                       </div>
                     </button>
                   ))}
+                  <div className="border-t border-gh-border mt-1 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="w-full px-3 py-2 text-sm text-red-500 hover:bg-gh-overlay text-left"
+                    >
+                      Log out
+                    </button>
+                  </div>
                 </div>
               </>
             )}
@@ -244,11 +284,10 @@ export default function App() {
                 type="button"
                 key={key}
                 onClick={() => setActiveView(key)}
-                className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                  activeView === key
-                    ? "border-orange-500 text-gh-text"
-                    : "border-transparent text-gh-text-secondary hover:text-gh-text hover:border-gh-border"
-                }`}
+                className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeView === key
+                  ? "border-orange-500 text-gh-text"
+                  : "border-transparent text-gh-text-secondary hover:text-gh-text hover:border-gh-border"
+                  }`}
               >
                 <Icon size={16} />
                 {label}
