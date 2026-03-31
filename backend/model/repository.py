@@ -27,3 +27,8 @@ class CreateBranchRequest(BaseModel):
 
 class UpdateBranchProtectionRequest(BaseModel):
     is_protected: bool
+
+
+class CreateFolderRequest(BaseModel):
+    folder_path: str = Field(min_length=1, max_length=1024)
+    commit_message: str = Field(min_length=1, max_length=500)

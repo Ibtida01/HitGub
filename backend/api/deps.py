@@ -41,7 +41,6 @@ async def get_current_user(
             SELECT user_id, username, email, full_name, avatar_url
             FROM   users
             WHERE  active_token     = $1
-            AND    is_active        = TRUE
             AND    token_expires_at > NOW()
             """,
             token,

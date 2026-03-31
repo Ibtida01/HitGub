@@ -245,7 +245,7 @@ def _create_collab_router(git_instance: PyGit) -> APIRouter:
         description=(
             "Revokes access for a collaborator. The record is kept for audit purposes. "
             "Permission rules: owner can remove anyone except themselves; "
-            "maintainer can remove contributors and read-only members only."
+            "non-owner collaborators can remove themselves (leave repository)."
         ),
     )
     def remove_collaborator(
@@ -253,19 +253,31 @@ def _create_collab_router(git_instance: PyGit) -> APIRouter:
         user_id: int,
         current_user: dict = Depends(get_current_user),
     ):
-        """Roles that can call this: owner, maintainer (with restrictions above)"""
+        """Roles that can call this: owner, or the user themselves (if not owner)."""
         actor_id = current_user["user_id"]
 
         if user_id == actor_id:
-            raise HTTPException(
-                400,
-                detail="You cannot remove yourself from the repository. Use transfer ownership instead.",
-            )
+            role = git_instance.get_user_role(actor_id, repo_id)
+            if role == "owner":
+                raise HTTPException(
+                    400,
+                    detail="Owners cannot leave their own repository. Transfer ownership first.",
+                )
+
+            try:
+                git_instance.remove_collaborator(
+                    repo_id=repo_id,
+                    user_id=user_id,
+                    actor_id=actor_id,
+                )
+                return {"detail": f"You have left repository {repo_id}."}
+            except PyGitError as exc:
+                raise _handle_pygit_errors(exc)
 
         if not git_instance.can_admin(actor_id, repo_id):
             raise HTTPException(
                 403,
-                detail="Only owners and maintainers can remove collaborators.",
+                detail="Only repository owners can remove other collaborators.",
             )
 
         try:

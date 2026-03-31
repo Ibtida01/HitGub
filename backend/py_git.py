@@ -283,6 +283,12 @@ class PyGit:
         try:
             yield cur
         finally:
+            # End read transactions explicitly so connections do not remain
+            # "idle in transaction" and block relation locks.
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
             cur.close()
 
     # ── password helpers ──────────────────────────────────────────────────────
@@ -340,6 +346,35 @@ class PyGit:
         d = dict(row)
         d.pop("password_hash", None)
         return d
+
+    def _emit_notification(
+        self,
+        *,
+        user_id: int,
+        notif_type: str,
+        message: str,
+        repo_id: Optional[int] = None,
+        actor_id: Optional[int] = None,
+        collaboration_id: Optional[int] = None,
+    ) -> None:
+        """
+        Best-effort notification insert.
+
+        Notification delivery should never break core collaboration flows, so
+        failures are logged and ignored.
+        """
+        try:
+            with self._transaction() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO notifications
+                        (user_id, repository_id, collaboration_id, actor_id, type, message, is_read)
+                    VALUES (%s, %s, %s, %s, %s, %s, FALSE)
+                    """,
+                    (user_id, repo_id, collaboration_id, actor_id, notif_type, message),
+                )
+        except Exception as exc:
+            logger.warning("py_git: failed to emit notification: %s", exc)
 
     # ═════════════════════════════════════════════════════════════════════════
     # B. USER MANAGEMENT
@@ -1333,13 +1368,14 @@ class PyGit:
                         Must be owner.
 
         Returns:
-            The new collaborator row dict (status='pending').
+            The collaborator row dict in status='pending'.
+            If a previous rejected/revoked record exists, that record is
+            reused and reset to pending.
 
         Raises:
             ValidationError:   role is 'owner' or not a valid role string.
             AccessDeniedError: invited_by is not owner .
-            DuplicateError:    invitee_id already has a record for this repo
-                               (even if pending or revoked).
+            DuplicateError:    invitee_id is already accepted or already pending.
 
         Example:
             invite = git.invite_collaborator(
@@ -1364,7 +1400,41 @@ class PyGit:
         self._require_role(invited_by, repo_id, ("owner"),
                            "invite collaborators")
 
-        try:
+        existing = self._get_collaborator_record(repo_id, invitee_id)
+        invitation_row: Optional[dict] = None
+        if existing is not None:
+            status = existing.get("status")
+            if status == "accepted":
+                raise DuplicateError(
+                    f"User {invitee_id} is already an active collaborator in repository {repo_id}."
+                )
+            if status == "pending":
+                raise DuplicateError(
+                    f"User {invitee_id} already has a pending invitation for repository {repo_id}."
+                )
+
+            # Re-open a previously declined/removed record as a fresh invitation.
+            with self._transaction() as cur:
+                cur.execute(
+                    """
+                    UPDATE repository_collaborators
+                    SET role = %s,
+                        invited_by = %s,
+                        invited_at = CURRENT_TIMESTAMP,
+                        accepted_at = NULL,
+                        status = 'pending'
+                    WHERE repository_id = %s AND user_id = %s
+                    RETURNING *;
+                    """,
+                    (role, invited_by, repo_id, invitee_id),
+                )
+                row = cur.fetchone()
+            if row is None:
+                raise PyGitError(
+                    f"Unable to update collaborator invitation for user {invitee_id} in repository {repo_id}."
+                )
+            invitation_row = dict(row)
+        else:
             with self._transaction() as cur:
                 cur.execute(
                     """
@@ -1375,11 +1445,32 @@ class PyGit:
                     """,
                     (repo_id, invitee_id, role, invited_by),
                 )
-                return dict(cur.fetchone())
-        except psycopg2.errors.UniqueViolation:
-            raise DuplicateError(
-                f"User {invitee_id} already has a collaborator record for repository {repo_id}. " 
-            )
+                invitation_row = dict(cur.fetchone())
+
+        repo_name = f"repository {repo_id}"
+        inviter_name = "someone"
+        try:
+            repo_name = self.get_repository(repo_id).get("name") or repo_name
+        except Exception:
+            pass
+        try:
+            inviter_name = self.get_user(user_id=invited_by).get("username") or inviter_name
+        except Exception:
+            pass
+
+        self._emit_notification(
+            user_id=invitee_id,
+            notif_type="invitation",
+            message=(
+                f"@{inviter_name} invited you to collaborate on {repo_name} "
+                f"as {role}."
+            ),
+            repo_id=repo_id,
+            actor_id=invited_by,
+            collaboration_id=invitation_row.get("collaboration_id") if invitation_row else None,
+        )
+
+        return invitation_row
 
     def respond_to_invitation(
         self, repo_id: int, user_id: int, accept: bool
@@ -1431,7 +1522,34 @@ class PyGit:
                 f"No pending invitation found for user {user_id} "
                 f"in repository {repo_id}."
             )
-        return dict(row)
+        updated = dict(row)
+
+        inviter_id = updated.get("invited_by")
+        if inviter_id and inviter_id != user_id:
+            repo_name = f"repository {repo_id}"
+            invitee_name = f"user {user_id}"
+            try:
+                repo_name = self.get_repository(repo_id).get("name") or repo_name
+            except Exception:
+                pass
+            try:
+                invitee_name = self.get_user(user_id=user_id).get("username") or invitee_name
+            except Exception:
+                pass
+
+            self._emit_notification(
+                user_id=inviter_id,
+                notif_type="accepted" if accept else "declined",
+                message=(
+                    f"@{invitee_name} { 'accepted' if accept else 'rejected' } "
+                    f"your invitation to {repo_name}."
+                ),
+                repo_id=repo_id,
+                actor_id=user_id,
+                collaboration_id=updated.get("collaboration_id"),
+            )
+
+        return updated
 
     
     def remove_collaborator(
@@ -1440,11 +1558,12 @@ class PyGit:
         """
         Revoke a collaborator's access to a repository.
 
-        The collaborator record is kept (status → 'revoked') for audit purposes.
+        The collaborator record is kept (status → 'rejected') for audit purposes.
         The user simply loses access.
 
         Permission rules:
-            owner      → can remove anyone except themselves 
+            owner      → can remove anyone except themselves
+            self-leave → a non-owner can remove their own access
 
         Args:
             repo_id:  ID of the repository.
@@ -1464,6 +1583,12 @@ class PyGit:
         """
         actor_role  = self.get_user_role(actor_id, repo_id)
         target_role = self.get_user_role(user_id,  repo_id)
+        target_record = self._get_collaborator_record(repo_id, user_id)
+
+        if target_record is None:
+            raise PyGitError(
+                f"User {user_id} has no collaborator record in repository {repo_id}."
+            )
 
         if user_id == actor_id and target_role == "owner":
             raise ValidationError(
@@ -1472,19 +1597,21 @@ class PyGit:
                 "then remove your old account from the collaborators."
             )
 
-        can_remove = (
-            actor_role == "owner" 
+        can_remove = actor_role == "owner" or (
+            actor_id == user_id
+            and target_record.get("role") != "owner"
+            and target_record.get("status") in {"accepted", "pending"}
         )
         if not can_remove:
             raise AccessDeniedError(
                 f"A '{actor_role}' cannot remove a '{target_role}'. "
-                "Owners can remove anyone; " 
+                "Only owners can remove others; non-owners may only remove themselves."
             )
 
         with self._transaction() as cur:
             cur.execute(
                 """
-                UPDATE repository_collaborators SET status = 'revoked'
+                UPDATE repository_collaborators SET status = 'rejected'
                 WHERE repository_id = %s AND user_id = %s
                 RETURNING collaboration_id;
                 """,
@@ -1496,6 +1623,48 @@ class PyGit:
             raise PyGitError(
                 f"User {user_id} has no collaborator record in repository {repo_id}."
             )
+
+        repo_name = f"repository {repo_id}"
+        actor_name = f"user {actor_id}"
+        try:
+            repo_name = self.get_repository(repo_id).get("name") or repo_name
+        except Exception:
+            pass
+        try:
+            actor_name = self.get_user(user_id=actor_id).get("username") or actor_name
+        except Exception:
+            pass
+
+        if actor_id == user_id:
+            try:
+                owner_id = self.get_repository(repo_id).get("owner_id")
+            except Exception:
+                owner_id = None
+
+            if owner_id and owner_id != actor_id:
+                self._emit_notification(
+                    user_id=owner_id,
+                    notif_type="removed",
+                    message=f"@{actor_name} left {repo_name}.",
+                    repo_id=repo_id,
+                    actor_id=actor_id,
+                    collaboration_id=target_record.get("collaboration_id"),
+                )
+        else:
+            if target_record.get("status") == "pending":
+                message = f"@{actor_name} canceled your invitation to {repo_name}."
+            else:
+                message = f"@{actor_name} removed your access from {repo_name}."
+
+            self._emit_notification(
+                user_id=user_id,
+                notif_type="removed",
+                message=message,
+                repo_id=repo_id,
+                actor_id=actor_id,
+                collaboration_id=target_record.get("collaboration_id"),
+            )
+
         return True
 
     def list_collaborators(
@@ -1549,6 +1718,94 @@ class PyGit:
         with self._query() as cur:
             cur.execute(sql, params)
             return [dict(r) for r in cur.fetchall()]
+
+    def update_collaborator_role(
+        self,
+        repo_id: int,
+        user_id: int,
+        new_role: str,
+        actor_id: int,
+    ) -> dict:
+        """
+        Update a collaborator role for accepted or pending records.
+
+        This supports changing the role of a pending invitation before it is
+        accepted, as well as changing an active collaborator's role.
+        """
+        if new_role not in self.VALID_ROLES:
+            raise ValidationError(
+                f"'{new_role}' is not a valid role. "
+                f"Choose from: {sorted(self.VALID_ROLES - {'owner'})}"
+            )
+        if new_role == "owner":
+            raise ValidationError(
+                "Cannot set role to 'owner' via role update. "
+                "Use transfer_ownership() instead."
+            )
+
+        actor_role = self.get_user_role(actor_id, repo_id)
+        if actor_role != "owner":
+            raise AccessDeniedError(
+                "Only repository owners can change collaborator roles."
+            )
+
+        target = self._get_collaborator_record(repo_id, user_id)
+        if target is None:
+            raise PyGitError(
+                f"User {user_id} has no collaborator record in repository {repo_id}."
+            )
+        if target["role"] == "owner":
+            raise ValidationError(
+                "Cannot change the owner's role with this endpoint. "
+                "Use transfer_ownership() instead."
+            )
+        if target["status"] not in {"accepted", "pending"}:
+            raise ValidationError(
+                f"Cannot change role for collaborator status '{target['status']}'."
+            )
+
+        with self._transaction() as cur:
+            cur.execute(
+                """
+                UPDATE repository_collaborators
+                SET role = %s
+                WHERE repository_id = %s AND user_id = %s
+                  AND status IN ('accepted', 'pending')
+                RETURNING *;
+                """,
+                (new_role, repo_id, user_id),
+            )
+            row = cur.fetchone()
+
+        if row is None:
+            raise PyGitError(
+                f"Unable to update role for user {user_id} in repository {repo_id}."
+            )
+        updated = dict(row)
+
+        repo_name = f"repository {repo_id}"
+        actor_name = f"user {actor_id}"
+        try:
+            repo_name = self.get_repository(repo_id).get("name") or repo_name
+        except Exception:
+            pass
+        try:
+            actor_name = self.get_user(user_id=actor_id).get("username") or actor_name
+        except Exception:
+            pass
+
+        self._emit_notification(
+            user_id=user_id,
+            notif_type="role_change",
+            message=(
+                f"@{actor_name} changed your role in {repo_name} to {new_role}."
+            ),
+            repo_id=repo_id,
+            actor_id=actor_id,
+            collaboration_id=updated.get("collaboration_id"),
+        )
+
+        return updated
 
     def transfer_ownership(
         self,

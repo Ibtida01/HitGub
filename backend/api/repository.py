@@ -1,13 +1,17 @@
+import io
+import json
 import re
+import zipfile
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 
 from database.connection import get_db
 
 from .deps import get_current_user
 from ..model.repository import (
     CreateBranchRequest,
+    CreateFolderRequest,
     CreateRepositoryRequest,
     UpdateBranchProtectionRequest,
     UpdateRepositoryRequest,
@@ -16,6 +20,8 @@ from ..model.repository import (
 REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 BRANCH_NAME_RE = re.compile(r"^[a-zA-Z0-9/_-]+$")
 RESTORE_WINDOW_DAYS = 30
+_SOFT_DELETE_SCHEMA_VERIFIED = False
+_CODE_SCHEMA_VERIFIED = False
 
 router = APIRouter(prefix="/repos", tags=["Repository"])
 
@@ -63,8 +69,67 @@ def _to_branch_payload(row: Any) -> dict:
 
 
 async def _ensure_soft_delete_columns(db) -> None:
-    await db.execute("ALTER TABLE repositories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
-    await db.execute("ALTER TABLE repositories ADD COLUMN IF NOT EXISTS restore_deadline TIMESTAMP")
+    global _SOFT_DELETE_SCHEMA_VERIFIED
+    if _SOFT_DELETE_SCHEMA_VERIFIED:
+        return
+
+    rows = await db.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'repositories'
+          AND column_name = ANY($1::text[])
+        """,
+        ["deleted_at", "restore_deadline"],
+    )
+    found = {row["column_name"] for row in rows}
+    missing = [name for name in ["deleted_at", "restore_deadline"] if name not in found]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Database schema is missing soft-delete columns: "
+                + ", ".join(missing)
+                + ". Run migration/init.sql before starting the API."
+            ),
+        )
+
+    _SOFT_DELETE_SCHEMA_VERIFIED = True
+
+
+async def _ensure_code_tables(db) -> None:
+    global _CODE_SCHEMA_VERIFIED
+    if _CODE_SCHEMA_VERIFIED:
+        return
+
+    row = await db.fetchrow(
+        """
+        SELECT
+            to_regclass('public.branch_commits') AS branch_commits,
+            to_regclass('public.branch_files') AS branch_files,
+            to_regclass('public.branch_directories') AS branch_directories
+        """
+    )
+    missing = []
+    if not row or row["branch_commits"] is None:
+        missing.append("branch_commits")
+    if not row or row["branch_files"] is None:
+        missing.append("branch_files")
+    if not row or row["branch_directories"] is None:
+        missing.append("branch_directories")
+
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Database schema is missing code tables: "
+                + ", ".join(missing)
+                + ". Run migration/init.sql before using file upload endpoints."
+            ),
+        )
+
+    _CODE_SCHEMA_VERIFIED = True
 
 
 async def _get_repo_row(db, repo_id: int, include_deleted: bool = False):
@@ -142,19 +207,223 @@ async def _ensure_owner(db, user_id: int, repo_id: int, include_deleted: bool = 
     return repo
 
 
+async def _ensure_branch_in_repo(db, repo_id: int, branch_id: int) -> dict:
+    row = await db.fetchrow(
+        """
+        SELECT branch_id, repository_id, name, is_default
+        FROM branches
+        WHERE repository_id = $1 AND branch_id = $2
+        """,
+        repo_id,
+        branch_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    return dict(row)
+
+
+def _normalize_path_prefix(path_value: str | None) -> str:
+    if not path_value:
+        return ""
+
+    normalized = path_value.replace("\\", "/").strip().strip("/")
+    if not normalized:
+        return ""
+
+    parts = [p for p in normalized.split("/") if p]
+    if any(part in {".", ".."} for part in parts):
+        raise HTTPException(status_code=422, detail="Invalid path")
+
+    return "/".join(parts)
+
+
+def _normalize_file_path(path_value: str) -> str:
+    normalized = _normalize_path_prefix(path_value)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="File path is required")
+    return normalized
+
+
+def _sanitize_filename(filename: str) -> str:
+    cleaned = (filename or "").replace("\\", "/").strip()
+    cleaned = cleaned.split("/")[-1].strip()
+    if not cleaned or cleaned in {".", ".."}:
+        raise HTTPException(status_code=422, detail="Invalid file name")
+    return cleaned
+
+
+def _join_storage_path(directory: str, filename: str) -> str:
+    return f"{directory}/{filename}" if directory else filename
+
+
+def _directory_name(path_value: str) -> str:
+    return path_value.rsplit("/", 1)[-1]
+
+
+def _iter_directory_ancestors(path_value: str) -> list[str]:
+    normalized = _normalize_path_prefix(path_value)
+    if not normalized:
+        return []
+    parts = normalized.split("/")
+    return ["/".join(parts[:idx + 1]) for idx in range(len(parts))]
+
+
+async def _touch_directory_hierarchy(
+    db,
+    *,
+    repository_id: int,
+    branch_id: int,
+    directory_path: str,
+    actor_id: int,
+    commit_id: int,
+) -> None:
+    for ancestor_path in _iter_directory_ancestors(directory_path):
+        await db.execute(
+            """
+            INSERT INTO branch_directories (
+                repository_id, branch_id, path, name,
+                created_by, last_touched_by, commit_id, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $5, $6, NOW(), NOW())
+            ON CONFLICT (branch_id, path)
+            DO UPDATE SET
+                last_touched_by = EXCLUDED.last_touched_by,
+                commit_id = EXCLUDED.commit_id,
+                updated_at = NOW()
+            """,
+            repository_id,
+            branch_id,
+            ancestor_path,
+            _directory_name(ancestor_path),
+            actor_id,
+            commit_id,
+        )
+
+
+def _build_directory_entries(file_rows: list[Any], directory_rows: list[Any], current_path: str) -> list[dict]:
+    dir_entries: dict[str, dict] = {}
+    file_entries: list[dict] = []
+    prefix = f"{current_path}/" if current_path else ""
+
+    def touch_directory(path_value: str, *, updated_at=None, commit_message=None):
+        existing = dir_entries.get(path_value)
+        payload = {
+            "type": "dir",
+            "name": _directory_name(path_value),
+            "path": path_value,
+            "updated_at": updated_at,
+            "commit_message": commit_message,
+        }
+        if existing is None:
+            dir_entries[path_value] = payload
+            return
+
+        if updated_at and (
+            existing.get("updated_at") is None or updated_at > existing.get("updated_at")
+        ):
+            dir_entries[path_value] = payload
+
+    for row in directory_rows:
+        full_path = row["path"]
+
+        if current_path:
+            if not full_path.startswith(prefix):
+                continue
+            rel_path = full_path[len(prefix):]
+        else:
+            rel_path = full_path
+
+        if not rel_path:
+            continue
+
+        if "/" in rel_path:
+            dirname = rel_path.split("/", 1)[0]
+            dir_path = _join_storage_path(current_path, dirname)
+            touch_directory(dir_path)
+            continue
+
+        touch_directory(
+            full_path,
+            updated_at=row.get("updated_at"),
+            commit_message=row.get("commit_message"),
+        )
+
+    for row in file_rows:
+        full_path = row["path"]
+
+        if current_path:
+            if not full_path.startswith(prefix):
+                continue
+            rel_path = full_path[len(prefix):]
+        else:
+            rel_path = full_path
+
+        if not rel_path:
+            continue
+
+        if "/" in rel_path:
+            dirname = rel_path.split("/", 1)[0]
+            dir_path = _join_storage_path(current_path, dirname)
+            touch_directory(dir_path)
+            continue
+
+        file_entries.append(
+            {
+                "type": "file",
+                "file_id": row["file_id"],
+                "name": row["filename"],
+                "path": full_path,
+                "mime_type": row["mime_type"],
+                "size_bytes": row["size_bytes"],
+                "updated_at": row["updated_at"],
+                "uploaded_by": row["uploaded_by"],
+                "commit_id": row["commit_id"],
+                "commit_message": row.get("commit_message"),
+            }
+        )
+
+    directories = sorted(dir_entries.values(), key=lambda item: item["name"].lower())
+    files = sorted(file_entries, key=lambda item: item["name"].lower())
+    return directories + files
+
+
 @router.get("")
 async def list_repositories(
     scope: str = Query(default="member"),
+    q: str = Query(default=""),
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
     await _ensure_soft_delete_columns(db)
 
-    if scope != "member":
-        raise HTTPException(status_code=422, detail="Only scope=member is supported")
+    if scope not in {"member", "owned", "discover"}:
+        raise HTTPException(
+            status_code=422,
+            detail="scope must be one of: member, owned, discover",
+        )
+
+    search = q.strip()
+    search_sql = ""
+    params: list[Any] = [current_user["user_id"]]
+    if search:
+        search_sql = (
+            " AND ("
+            "r.name ILIKE $2 "
+            "OR COALESCE(r.description, '') ILIKE $2 "
+            "OR u.username ILIKE $2"
+            ")"
+        )
+        params.append(f"%{search}%")
+
+    if scope == "owned":
+        scope_sql = "r.owner_id = $1"
+    elif scope == "discover":
+        scope_sql = "(r.visibility = 'public' OR r.owner_id = $1 OR rc.user_id IS NOT NULL)"
+    else:
+        scope_sql = "(r.owner_id = $1 OR rc.user_id IS NOT NULL)"
 
     rows = await db.fetch(
-        """
+        f"""
         SELECT DISTINCT
             r.repository_id,
             r.owner_id,
@@ -178,10 +447,11 @@ async def list_repositories(
            AND rc.user_id = $1
            AND rc.status = 'accepted'
         WHERE r.deleted_at IS NULL
-          AND (r.owner_id = $1 OR rc.user_id IS NOT NULL)
+                    AND {scope_sql}
+                    {search_sql}
         ORDER BY r.created_at DESC
-        """,
-        current_user["user_id"],
+                """,
+                *params,
     )
 
     return [_to_repo_payload(r) for r in rows]
@@ -793,3 +1063,531 @@ async def delete_branch(
         branch_id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{repo_id}/branches/{branch_id}/files")
+async def list_branch_files(
+    repo_id: int,
+    branch_id: int,
+    path: str = Query(default=""),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    branch = await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    current_path = _normalize_path_prefix(path)
+
+    file_rows = await db.fetch(
+        """
+        SELECT
+            f.file_id,
+            f.path,
+            f.filename,
+            f.mime_type,
+            f.size_bytes,
+            f.updated_at,
+            f.uploaded_by,
+            f.commit_id,
+            bc.message AS commit_message
+        FROM branch_files f
+        LEFT JOIN branch_commits bc ON bc.commit_id = f.commit_id
+        WHERE f.repository_id = $1 AND f.branch_id = $2
+        ORDER BY path
+        """,
+        repo_id,
+        branch_id,
+    )
+
+    directory_rows = await db.fetch(
+        """
+        SELECT
+            d.path,
+            d.name,
+            d.updated_at,
+            d.commit_id,
+            bc.message AS commit_message
+        FROM branch_directories d
+        LEFT JOIN branch_commits bc ON bc.commit_id = d.commit_id
+        WHERE d.repository_id = $1 AND d.branch_id = $2
+        ORDER BY d.path
+        """,
+        repo_id,
+        branch_id,
+    )
+
+    return {
+        "repository_id": repo_id,
+        "branch_id": branch_id,
+        "branch_name": branch["name"],
+        "path": current_path,
+        "entries": _build_directory_entries(file_rows, directory_rows, current_path),
+    }
+
+
+@router.get("/{repo_id}/branches/{branch_id}/files/raw")
+async def download_branch_file(
+    repo_id: int,
+    branch_id: int,
+    path: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    normalized_path = _normalize_file_path(path)
+    row = await db.fetchrow(
+        """
+        SELECT filename, mime_type, content
+        FROM branch_files
+        WHERE repository_id = $1 AND branch_id = $2 AND path = $3
+        """,
+        repo_id,
+        branch_id,
+        normalized_path,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filename = row["filename"].replace('"', "")
+    return Response(
+        content=bytes(row["content"]),
+        media_type=row["mime_type"] or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{repo_id}/branches/{branch_id}/folders/raw")
+async def download_branch_folder(
+    repo_id: int,
+    branch_id: int,
+    path: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    folder_path = _normalize_path_prefix(path)
+    if not folder_path:
+        raise HTTPException(status_code=422, detail="Folder path is required")
+
+    prefix = f"{folder_path}/%"
+
+    file_rows = await db.fetch(
+        """
+        SELECT path, filename, content
+        FROM branch_files
+        WHERE repository_id = $1
+          AND branch_id = $2
+          AND path LIKE $3
+        ORDER BY path
+        """,
+        repo_id,
+        branch_id,
+        prefix,
+    )
+
+    directory_rows = await db.fetch(
+        """
+        SELECT path
+        FROM branch_directories
+        WHERE repository_id = $1
+          AND branch_id = $2
+          AND (path = $3 OR path LIKE $4)
+        ORDER BY path
+        """,
+        repo_id,
+        branch_id,
+        folder_path,
+        prefix,
+    )
+
+    if not file_rows and not directory_rows:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    folder_name = _directory_name(folder_path)
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for directory in directory_rows:
+            full_path = directory["path"]
+            if full_path == folder_path:
+                continue
+            rel_path = full_path[len(folder_path):].lstrip("/")
+            if not rel_path:
+                continue
+            archive.writestr(f"{rel_path.rstrip('/')}/", b"")
+
+        for row in file_rows:
+            full_path = row["path"]
+            rel_path = full_path[len(folder_path):].lstrip("/")
+            if not rel_path:
+                continue
+            archive.writestr(rel_path, bytes(row["content"]))
+
+    buffer.seek(0)
+    safe_name = folder_name.replace('"', "")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.zip"'},
+    )
+
+
+@router.post("/{repo_id}/branches/{branch_id}/files/upload", status_code=status.HTTP_201_CREATED)
+async def upload_branch_files(
+    repo_id: int,
+    branch_id: int,
+    commit_message: str = Form(...),
+    target_path: str = Form(default=""),
+    relative_paths: str = Form(default=""),
+    files: list[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    branch = await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    role = await _get_role(db, current_user["user_id"], repo_id)
+    if role not in {"owner", "contributor", "maintainer"}:
+        raise HTTPException(status_code=403, detail="Write access required")
+
+    message = commit_message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Commit message is required")
+    if not files:
+        raise HTTPException(status_code=422, detail="At least one file is required")
+
+    directory = _normalize_path_prefix(target_path)
+    uploaded_relative_paths = [""] * len(files)
+
+    if relative_paths.strip():
+        try:
+            parsed = json.loads(relative_paths)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail="Invalid relative_paths payload") from exc
+
+        if not isinstance(parsed, list):
+            raise HTTPException(status_code=422, detail="relative_paths must be an array")
+        if len(parsed) != len(files):
+            raise HTTPException(status_code=422, detail="relative_paths length must match files length")
+
+        uploaded_relative_paths = ["" if item is None else str(item) for item in parsed]
+
+    async with db.transaction():
+        commit_row = await db.fetchrow(
+            """
+            INSERT INTO branch_commits (repository_id, branch_id, author_id, message)
+            VALUES ($1, $2, $3, $4)
+            RETURNING commit_id, created_at
+            """,
+            repo_id,
+            branch_id,
+            current_user["user_id"],
+            message,
+        )
+
+        changed_files = []
+        for idx, upload in enumerate(files):
+            rel_path = (uploaded_relative_paths[idx] or "").strip()
+
+            effective_directory = directory
+            if rel_path:
+                normalized_rel_path = _normalize_file_path(rel_path)
+                if "/" in normalized_rel_path:
+                    rel_dir, rel_name = normalized_rel_path.rsplit("/", 1)
+                else:
+                    rel_dir, rel_name = "", normalized_rel_path
+                filename = _sanitize_filename(rel_name)
+                effective_directory = _normalize_path_prefix(
+                    _join_storage_path(directory, rel_dir)
+                )
+            else:
+                filename = _sanitize_filename(upload.filename or "")
+
+            full_path = _join_storage_path(effective_directory, filename)
+            content = await upload.read()
+            mime_type = upload.content_type or "application/octet-stream"
+
+            if effective_directory:
+                await _touch_directory_hierarchy(
+                    db,
+                    repository_id=repo_id,
+                    branch_id=branch_id,
+                    directory_path=effective_directory,
+                    actor_id=current_user["user_id"],
+                    commit_id=commit_row["commit_id"],
+                )
+
+            row = await db.fetchrow(
+                """
+                INSERT INTO branch_files (
+                    repository_id, branch_id, path, filename, mime_type,
+                    size_bytes, content, uploaded_by, commit_id, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                ON CONFLICT (branch_id, path)
+                DO UPDATE SET
+                    filename = EXCLUDED.filename,
+                    mime_type = EXCLUDED.mime_type,
+                    size_bytes = EXCLUDED.size_bytes,
+                    content = EXCLUDED.content,
+                    uploaded_by = EXCLUDED.uploaded_by,
+                    commit_id = EXCLUDED.commit_id,
+                    updated_at = NOW()
+                RETURNING file_id, path, filename, mime_type, size_bytes, updated_at
+                """,
+                repo_id,
+                branch_id,
+                full_path,
+                filename,
+                mime_type,
+                len(content),
+                content,
+                current_user["user_id"],
+                commit_row["commit_id"],
+            )
+            changed_files.append(dict(row))
+
+    return {
+        "repository_id": repo_id,
+        "branch_id": branch_id,
+        "branch_name": branch["name"],
+        "commit": {
+            "commit_id": commit_row["commit_id"],
+            "message": message,
+            "author_id": current_user["user_id"],
+            "created_at": commit_row["created_at"],
+        },
+        "changed_files": changed_files,
+    }
+
+
+@router.post("/{repo_id}/branches/{branch_id}/folders", status_code=status.HTTP_201_CREATED)
+async def create_branch_folder(
+    repo_id: int,
+    branch_id: int,
+    body: CreateFolderRequest,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    branch = await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    role = await _get_role(db, current_user["user_id"], repo_id)
+    if role not in {"owner", "contributor", "maintainer"}:
+        raise HTTPException(status_code=403, detail="Write access required")
+
+    folder_path = _normalize_path_prefix(body.folder_path)
+    if not folder_path:
+        raise HTTPException(status_code=422, detail="Folder path is required")
+
+    message = body.commit_message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Commit message is required")
+
+    async with db.transaction():
+        commit_row = await db.fetchrow(
+            """
+            INSERT INTO branch_commits (repository_id, branch_id, author_id, message)
+            VALUES ($1, $2, $3, $4)
+            RETURNING commit_id, created_at
+            """,
+            repo_id,
+            branch_id,
+            current_user["user_id"],
+            message,
+        )
+
+        await _touch_directory_hierarchy(
+            db,
+            repository_id=repo_id,
+            branch_id=branch_id,
+            directory_path=folder_path,
+            actor_id=current_user["user_id"],
+            commit_id=commit_row["commit_id"],
+        )
+
+        folder_row = await db.fetchrow(
+            """
+            SELECT path, name, updated_at, commit_id
+            FROM branch_directories
+            WHERE repository_id = $1 AND branch_id = $2 AND path = $3
+            """,
+            repo_id,
+            branch_id,
+            folder_path,
+        )
+
+    return {
+        "repository_id": repo_id,
+        "branch_id": branch_id,
+        "branch_name": branch["name"],
+        "directory": dict(folder_row) if folder_row else {"path": folder_path, "name": _directory_name(folder_path)},
+        "commit": {
+            "commit_id": commit_row["commit_id"],
+            "message": message,
+            "author_id": current_user["user_id"],
+            "created_at": commit_row["created_at"],
+        },
+    }
+
+
+@router.delete("/{repo_id}/branches/{branch_id}/files")
+async def delete_branch_file(
+    repo_id: int,
+    branch_id: int,
+    path: str = Query(...),
+    commit_message: str = Query(default=""),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    role = await _get_role(db, current_user["user_id"], repo_id)
+    if role not in {"owner", "contributor", "maintainer"}:
+        raise HTTPException(status_code=403, detail="Write access required")
+
+    normalized_path = _normalize_file_path(path)
+    message = commit_message.strip() or f"Delete file {normalized_path}"
+
+    async with db.transaction():
+        commit_row = await db.fetchrow(
+            """
+            INSERT INTO branch_commits (repository_id, branch_id, author_id, message)
+            VALUES ($1, $2, $3, $4)
+            RETURNING commit_id, created_at
+            """,
+            repo_id,
+            branch_id,
+            current_user["user_id"],
+            message,
+        )
+
+        deleted_row = await db.fetchrow(
+            """
+            DELETE FROM branch_files
+            WHERE repository_id = $1 AND branch_id = $2 AND path = $3
+            RETURNING file_id, path, filename
+            """,
+            repo_id,
+            branch_id,
+            normalized_path,
+        )
+
+    if not deleted_row:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return {
+        "detail": "File deleted",
+        "repository_id": repo_id,
+        "branch_id": branch_id,
+        "deleted_file": dict(deleted_row),
+        "commit": {
+            "commit_id": commit_row["commit_id"],
+            "message": message,
+            "author_id": current_user["user_id"],
+            "created_at": commit_row["created_at"],
+        },
+    }
+
+
+@router.delete("/{repo_id}/branches/{branch_id}/folders")
+async def delete_branch_folder(
+    repo_id: int,
+    branch_id: int,
+    path: str = Query(...),
+    commit_message: str = Query(default=""),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    await _ensure_soft_delete_columns(db)
+    await _ensure_code_tables(db)
+    await _ensure_read_access(db, current_user["user_id"], repo_id)
+    await _ensure_branch_in_repo(db, repo_id, branch_id)
+
+    role = await _get_role(db, current_user["user_id"], repo_id)
+    if role not in {"owner", "contributor", "maintainer"}:
+        raise HTTPException(status_code=403, detail="Write access required")
+
+    folder_path = _normalize_path_prefix(path)
+    if not folder_path:
+        raise HTTPException(status_code=422, detail="Folder path is required")
+
+    prefix = f"{folder_path}/%"
+    message = commit_message.strip() or f"Delete folder {folder_path}"
+
+    async with db.transaction():
+        commit_row = await db.fetchrow(
+            """
+            INSERT INTO branch_commits (repository_id, branch_id, author_id, message)
+            VALUES ($1, $2, $3, $4)
+            RETURNING commit_id, created_at
+            """,
+            repo_id,
+            branch_id,
+            current_user["user_id"],
+            message,
+        )
+
+        deleted_files_result = await db.execute(
+            """
+            DELETE FROM branch_files
+            WHERE repository_id = $1
+              AND branch_id = $2
+              AND (path = $3 OR path LIKE $4)
+            """,
+            repo_id,
+            branch_id,
+            folder_path,
+            prefix,
+        )
+
+        deleted_dirs_result = await db.execute(
+            """
+            DELETE FROM branch_directories
+            WHERE repository_id = $1
+              AND branch_id = $2
+              AND (path = $3 OR path LIKE $4)
+            """,
+            repo_id,
+            branch_id,
+            folder_path,
+            prefix,
+        )
+
+    deleted_files = int(deleted_files_result.split(" ")[-1])
+    deleted_folders = int(deleted_dirs_result.split(" ")[-1])
+
+    if deleted_files == 0 and deleted_folders == 0:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    return {
+        "detail": "Folder deleted",
+        "repository_id": repo_id,
+        "branch_id": branch_id,
+        "path": folder_path,
+        "deleted_files": deleted_files,
+        "deleted_folders": deleted_folders,
+        "commit": {
+            "commit_id": commit_row["commit_id"],
+            "message": message,
+            "author_id": current_user["user_id"],
+            "created_at": commit_row["created_at"],
+        },
+    }
