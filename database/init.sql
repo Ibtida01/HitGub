@@ -1,4 +1,12 @@
+DROP TABLE IF EXISTS branch_directories CASCADE;
+
+DROP TABLE IF EXISTS branch_files CASCADE;
+
+DROP TABLE IF EXISTS branch_commits CASCADE;
+
 DROP TABLE IF EXISTS repository_collaborators CASCADE;
+
+DROP TABLE IF EXISTS notifications CASCADE;
 
 DROP TABLE IF EXISTS branches CASCADE;
 
@@ -35,6 +43,8 @@ CREATE TABLE repositories (
     is_initialized BOOLEAN DEFAULT FALSE,
     has_readme BOOLEAN DEFAULT FALSE,
     license_type VARCHAR(50),
+    deleted_at TIMESTAMP,
+    restore_deadline TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_repo_per_owner UNIQUE (owner_id, name),
@@ -53,6 +63,45 @@ CREATE TABLE branches (
     last_commit_at TIMESTAMP,
     CONSTRAINT unique_branch_per_repo UNIQUE (repository_id, name),
     CONSTRAINT branch_name_format CHECK (name ~ '^[a-zA-Z0-9/_-]+$')
+);
+
+CREATE TABLE branch_commits (
+    commit_id BIGSERIAL PRIMARY KEY,
+    repository_id INTEGER NOT NULL REFERENCES repositories (repository_id) ON DELETE CASCADE,
+    branch_id INTEGER NOT NULL REFERENCES branches (branch_id) ON DELETE CASCADE,
+    author_id INTEGER NOT NULL REFERENCES users (user_id),
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE branch_files (
+    file_id BIGSERIAL PRIMARY KEY,
+    repository_id INTEGER NOT NULL REFERENCES repositories (repository_id) ON DELETE CASCADE,
+    branch_id INTEGER NOT NULL REFERENCES branches (branch_id) ON DELETE CASCADE,
+    path VARCHAR(1024) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(255),
+    size_bytes BIGINT NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+    content BYTEA NOT NULL,
+    uploaded_by INTEGER NOT NULL REFERENCES users (user_id),
+    commit_id BIGINT REFERENCES branch_commits (commit_id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_branch_file_path UNIQUE (branch_id, path)
+);
+
+CREATE TABLE branch_directories (
+    directory_id BIGSERIAL PRIMARY KEY,
+    repository_id INTEGER NOT NULL REFERENCES repositories (repository_id) ON DELETE CASCADE,
+    branch_id INTEGER NOT NULL REFERENCES branches (branch_id) ON DELETE CASCADE,
+    path VARCHAR(1024) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users (user_id),
+    last_touched_by INTEGER NOT NULL REFERENCES users (user_id),
+    commit_id BIGINT REFERENCES branch_commits (commit_id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_branch_directory_path UNIQUE (branch_id, path)
 );
 
 CREATE TABLE repository_collaborators (
@@ -79,6 +128,18 @@ CREATE TABLE repository_collaborators (
     CONSTRAINT unique_user_repo_collab UNIQUE (repository_id, user_id)
 );
 
+CREATE TABLE notifications (
+    notification_id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    repository_id INTEGER REFERENCES repositories (repository_id) ON DELETE SET NULL,
+    collaboration_id INTEGER REFERENCES repository_collaborators (collaboration_id) ON DELETE SET NULL,
+    actor_id INTEGER REFERENCES users (user_id) ON DELETE SET NULL,
+    type VARCHAR(50) NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX idx_users_username ON users (username);
 
 CREATE INDEX idx_users_email ON users (email);
@@ -95,6 +156,12 @@ CREATE INDEX idx_branches_repo ON branches (repository_id);
 
 CREATE INDEX idx_branches_default ON branches (is_default);
 
+CREATE INDEX idx_branch_commits_branch_created ON branch_commits (branch_id, created_at);
+
+CREATE INDEX idx_branch_files_branch_path ON branch_files (branch_id, path);
+
+CREATE INDEX idx_branch_directories_branch_path ON branch_directories (branch_id, path);
+
 CREATE INDEX idx_collab_repo ON repository_collaborators (repository_id);
 
 CREATE INDEX idx_collab_user ON repository_collaborators (user_id);
@@ -102,6 +169,10 @@ CREATE INDEX idx_collab_user ON repository_collaborators (user_id);
 CREATE INDEX idx_collab_role ON repository_collaborators (role);
 
 CREATE INDEX idx_collab_status ON repository_collaborators (status);
+
+CREATE INDEX idx_notifications_user_created ON notifications (user_id, created_at DESC);
+
+CREATE INDEX idx_notifications_user_unread ON notifications (user_id, is_read);
 
 CREATE OR REPLACE FUNCTION update_timestamp()
 RETURNS TRIGGER AS $$
