@@ -3,6 +3,7 @@ import { X, Search, UserPlus, Loader2 } from 'lucide-react';
 import { ASSIGNABLE_ROLES } from '../../types/index.js';
 import { collabApi } from '../../services/collabApi.js';
 import { Avatar } from './Avatar.jsx';
+import { timeAgo } from '../../utils/datetime.js';
 
 const ROLE_LABELS = {
   owner: 'Owner',
@@ -13,8 +14,9 @@ const ROLE_LABELS = {
 export function InviteModal({
   isOpen,
   currentUserRole,
-  existingUserIds,
+  existingCollaboratorsByUserId = {},
   onInvite,
+  onCancelInvitation,
   onClose,
 }) {
   const [query, setQuery] = useState('');
@@ -23,7 +25,9 @@ export function InviteModal({
   const [role, setRole] = useState('contributor');
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const inputRef = useRef(null);
   const debounceRef = useRef(null);
 
@@ -36,6 +40,7 @@ export function InviteModal({
       setSelectedUser(null);
       setRole('contributor');
       setError('');
+      setNotice('');
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isOpen]);
@@ -43,6 +48,7 @@ export function InviteModal({
   const handleSearch = useCallback((q) => {
     setQuery(q);
     setError('');
+    setNotice('');
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!q.trim()) {
       setResults([]);
@@ -66,6 +72,7 @@ export function InviteModal({
     if (!selectedUser) return;
     setSubmitting(true);
     setError('');
+    setNotice('');
     try {
       await onInvite(selectedUser.user_id, role);
       onClose();
@@ -73,6 +80,28 @@ export function InviteModal({
       setError(e instanceof Error ? e.message : 'Failed to send invitation');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const existingRecord = selectedUser
+    ? existingCollaboratorsByUserId?.[selectedUser.user_id] ?? null
+    : null;
+
+  const isPending = existingRecord?.status === 'pending';
+  const isAlreadyAdded = !!existingRecord;
+
+  const handleCancelPending = async () => {
+    if (!selectedUser || !isPending) return;
+    setCancelling(true);
+    setError('');
+    setNotice('');
+    try {
+      await onCancelInvitation(selectedUser.user_id);
+      setNotice('Pending invitation canceled. You can now send a new invitation.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to cancel invitation');
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -123,17 +152,22 @@ export function InviteModal({
               {results.length > 0 && (
                 <div className="border border-gh-border rounded-lg max-h-56 overflow-y-auto divide-y divide-gh-border-muted">
                   {results.map((user) => {
-                    const alreadyAdded = existingUserIds.includes(user.user_id);
+                    const existing = existingCollaboratorsByUserId?.[user.user_id] ?? null;
+                    const alreadyAdded = !!existing;
+                    const existingLabel = existing
+                      ? existing.status === 'pending'
+                        ? `Pending as ${ROLE_LABELS[existing.role] ?? existing.role}`
+                        : existing.status === 'accepted'
+                          ? `Already ${ROLE_LABELS[existing.role] ?? existing.role}`
+                          : `Already has a ${existing.status} record`
+                      : null;
                     return (
                       <button
                         type="button"
                         key={user.user_id}
-                        disabled={alreadyAdded}
                         onClick={() => setSelectedUser(user)}
                         className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${
-                          alreadyAdded
-                            ? 'opacity-40 cursor-not-allowed'
-                            : 'hover:bg-gh-overlay cursor-pointer'
+                          alreadyAdded ? 'bg-gh-overlay/40' : 'hover:bg-gh-overlay cursor-pointer'
                         }`}
                       >
                         <Avatar username={user.username} avatarUrl={user.avatar_url} size="sm" />
@@ -146,7 +180,7 @@ export function InviteModal({
                           </div>
                         </div>
                         {alreadyAdded && (
-                          <span className="text-xs text-gh-text-muted shrink-0">Already added</span>
+                          <span className="text-xs text-gh-text-muted shrink-0">{existingLabel}</span>
                         )}
                       </button>
                     );
@@ -176,18 +210,50 @@ export function InviteModal({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setSelectedUser(null)}
+                  onClick={() => {
+                    setSelectedUser(null);
+                    setError('');
+                    setNotice('');
+                  }}
                   className="text-gh-text-muted hover:text-gh-text-secondary p-1"
                 >
                   <X size={16} />
                 </button>
               </div>
 
+              {existingRecord && (
+                <div className="rounded-lg border border-yellow-400/30 bg-yellow-400/10 px-3 py-2.5 text-sm text-gh-text-secondary">
+                  <div className="font-medium text-gh-text">
+                    Existing invitation status: {existingRecord.status}
+                  </div>
+                  <div className="mt-0.5">
+                    Role: {ROLE_LABELS[existingRecord.role] ?? existingRecord.role}
+                  </div>
+                  {existingRecord.status === 'pending' && (
+                    <div className="mt-0.5">
+                      Invited {timeAgo(existingRecord.invited_at)}
+                    </div>
+                  )}
+                  {isPending && (
+                    <button
+                      type="button"
+                      onClick={handleCancelPending}
+                      disabled={cancelling}
+                      className="mt-2 px-3 py-1.5 rounded-md border border-gh-border text-gh-text hover:bg-gh-overlay disabled:opacity-60 inline-flex items-center gap-1.5"
+                    >
+                      {cancelling && <Loader2 size={14} className="animate-spin" />}
+                      Cancel pending invitation
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gh-text mb-1.5">Role</label>
                 <select
                   value={role}
                   onChange={(e) => setRole(e.target.value)}
+                  disabled={isAlreadyAdded}
                   className="w-full border border-gh-border rounded-lg px-3 py-2 text-sm bg-gh-canvas text-gh-text focus:outline-none focus:ring-2 focus:ring-gh-accent focus:border-gh-accent"
                 >
                   {assignableRoles.map((r) => (
@@ -200,6 +266,9 @@ export function InviteModal({
             </>
           )}
 
+          {notice && (
+            <p className="text-sm text-gh-success bg-green-400/10 px-3 py-2 rounded-lg">{notice}</p>
+          )}
           {error && (
             <p className="text-sm text-gh-danger bg-red-400/10 px-3 py-2 rounded-lg">{error}</p>
           )}
@@ -216,11 +285,11 @@ export function InviteModal({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={!selectedUser || submitting}
+            disabled={!selectedUser || submitting || isAlreadyAdded}
             className="px-4 py-1.5 text-sm font-medium text-white bg-gh-success-em rounded-md hover:bg-gh-success disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
           >
             {submitting && <Loader2 size={14} className="animate-spin" />}
-            Send invitation
+            {isAlreadyAdded ? 'Invitation exists' : 'Send invitation'}
           </button>
         </div>
       </div>

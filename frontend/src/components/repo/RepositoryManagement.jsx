@@ -5,8 +5,6 @@ import {
   GitBranch,
   Loader2,
   Lock,
-  Plus,
-  RotateCcw,
   Save,
   Settings,
   Shield,
@@ -15,7 +13,7 @@ import {
 import { repoApi } from "../../services/repoApi.js";
 import { Avatar } from "../collab/Avatar.jsx";
 import { RoleBadge } from "../collab/RoleBadge.jsx";
-import { CreateRepositoryModal } from "./CreateRepositoryModal.jsx";
+import { timeAgo } from "../../utils/datetime.js";
 
 const LICENSE_OPTIONS = [
   { value: "", label: "No license" },
@@ -24,19 +22,6 @@ const LICENSE_OPTIONS = [
   { value: "GPL-3.0", label: "GNU GPL v3.0" },
   { value: "BSD-3-Clause", label: "BSD 3-Clause" },
 ];
-
-function timeAgo(dateStr) {
-  if (!dateStr) return "No commits yet";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-}
 
 function SummaryPill({ label, value }) {
   return (
@@ -62,11 +47,8 @@ export function RepositoryManagement({
   const [branches, setBranches] = useState([]);
   const [stats, setStats] = useState(null);
   const [accessSummary, setAccessSummary] = useState(null);
-  const [deletedRepos, setDeletedRepos] = useState([]);
-  const [createOpen, setCreateOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
   const [toDeleteBranch, setToDeleteBranch] = useState(null);
-  const [toPermanentDelete, setToPermanentDelete] = useState(null);
   const [repoForm, setRepoForm] = useState({
     name: "",
     description: "",
@@ -87,14 +69,11 @@ export function RepositoryManagement({
     setLoading(true);
     try {
       if (!selectedRepoId) {
-        const deletedRows =
-          await repoApi.listDeletedRepositoriesForUser(currentUserId);
         setRepo(null);
         setRepoRole(null);
         setBranches([]);
         setStats(null);
         setAccessSummary(null);
-        setDeletedRepos(deletedRows);
         return;
       }
 
@@ -104,7 +83,6 @@ export function RepositoryManagement({
         repoApi.getBranches(selectedRepoId),
         repoApi.getRepositoryStats(selectedRepoId),
         repoApi.getAccessSummary(selectedRepoId),
-        repoApi.listDeletedRepositoriesForUser(currentUserId),
       ]);
 
       const [
@@ -113,7 +91,6 @@ export function RepositoryManagement({
         branchResult,
         statsResult,
         summaryResult,
-        deletedResult,
       ] = results;
 
       const repoData =
@@ -125,15 +102,12 @@ export function RepositoryManagement({
         statsResult.status === "fulfilled" ? statsResult.value : null;
       const summaryRows =
         summaryResult.status === "fulfilled" ? summaryResult.value : null;
-      const deletedRows =
-        deletedResult.status === "fulfilled" ? deletedResult.value : [];
 
       setRepo(repoData);
       setRepoRole(role);
       setBranches(branchRows);
       setStats(statRows);
       setAccessSummary(summaryRows);
-      setDeletedRepos(deletedRows);
 
       if (repoData) {
         setRepoForm({
@@ -146,12 +120,9 @@ export function RepositoryManagement({
         });
       }
 
-      // Show error toast only if repo fetch failed (repos was deleted)
+      // Show error toast only if repo fetch failed.
       if (repoResult.status === "rejected" && !repoData) {
-        showToast(
-          "info",
-          "Current repository is in trash. View it in the trash section to restore.",
-        );
+        showToast("error", "Unable to load selected repository.");
       }
     } catch (e) {
       showToast(
@@ -167,7 +138,7 @@ export function RepositoryManagement({
     refresh();
   }, [refresh]);
 
-  const canCreateBranch = repoRole === "owner" || repoRole === "contributor";
+  const canWrite = repoRole === "owner" || repoRole === "contributor";
   const canAdmin = repoRole === "owner";
 
   const visibleBranches = useMemo(() => {
@@ -177,14 +148,6 @@ export function RepositoryManagement({
       return a.name.localeCompare(b.name);
     });
   }, [branches]);
-
-  const handleCreateRepository = async (payload) => {
-    const created = await repoApi.createRepository(currentUserId, payload);
-    showToast("success", `Repository ${created.name} created`);
-    onRepositoriesChanged();
-    onSelectRepo(created.repository_id);
-    await refresh();
-  };
 
   const handleSaveSettings = async () => {
     setSaving(true);
@@ -306,42 +269,6 @@ export function RepositoryManagement({
     }
   };
 
-  const handleRestoreRepository = async (repoId, repoName) => {
-    try {
-      await repoApi.restoreRepository(repoId, currentUserId);
-      showToast("success", `${repoName} restored from trash`);
-      onRepositoriesChanged();
-      await refresh();
-    } catch (e) {
-      showToast(
-        "error",
-        e instanceof Error ? e.message : "Failed to restore repository",
-      );
-    }
-  };
-
-  const handlePermanentDeleteRepository = async () => {
-    if (!toPermanentDelete) return;
-
-    try {
-      await repoApi.permanentlyDeleteRepository(
-        toPermanentDelete.repository_id,
-        currentUserId,
-      );
-      showToast("success", `${toPermanentDelete.name} permanently deleted`);
-      setToPermanentDelete(null);
-      onRepositoriesChanged();
-      await refresh();
-    } catch (e) {
-      showToast(
-        "error",
-        e instanceof Error
-          ? e.message
-          : "Failed to permanently delete repository",
-      );
-    }
-  };
-
   if (loading) {
     return (
       <div className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-8 text-center text-gh-text-secondary">
@@ -351,7 +278,7 @@ export function RepositoryManagement({
     );
   }
 
-  if (!repo && deletedRepos.length === 0) {
+  if (selectedRepoId && !repo) {
     return (
       <div className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-8 text-center text-gh-text-secondary">
         Unable to load selected repository.
@@ -379,34 +306,41 @@ export function RepositoryManagement({
       )}
 
       <section className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
           <div>
             <h2 className="text-lg font-semibold text-gh-text">
-              Repository Creation and Management
+              Repository Settings
             </h2>
             <p className="text-sm text-gh-text-secondary mt-1">
-              Initialize repositories, manage branches, set access policies, and
-              configure metadata.
+              Configure the selected repository and manage branch-level controls.
             </p>
             {repo && (
               <div className="mt-3 flex items-center gap-2 text-sm">
-                <RoleBadge role={repoRole || "read-only"} />
+                {repoRole ? (
+                  <RoleBadge role={repoRole} />
+                ) : (
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border border-gh-border text-gh-text-secondary">
+                    Visitor
+                  </span>
+                )}
                 <span className="text-gh-text-secondary">
                   Current repository role
                 </span>
               </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="px-3 py-2 rounded-md text-sm bg-gh-accent-em text-white hover:bg-gh-accent flex items-center gap-1.5"
-          >
-            <Plus size={16} />
-            New repository
-          </button>
         </div>
       </section>
+
+      {!repo && (
+        <section className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-6 text-gh-text-secondary">
+          <p className="text-sm">
+            No repository selected yet. Create your first repository using the
+            <span className="text-gh-text font-medium"> New repository </span>
+            button above, or pick one from the repo dropdown.
+          </p>
+        </section>
+      )}
 
       {repo && (
         <>
@@ -454,31 +388,28 @@ export function RepositoryManagement({
           <section className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-5">
             <div className="flex items-center gap-2 mb-4">
               <GitBranch size={17} className="text-gh-accent" />
-              <h3 className="font-semibold text-gh-text">Branch Management</h3>
+              <h3 className="font-semibold text-gh-text">Branches</h3>
             </div>
 
-            <div className="mb-4 flex gap-2">
-              <input
-                type="text"
-                value={newBranchName}
-                onChange={(e) => setNewBranchName(e.target.value)}
-                disabled={!canCreateBranch}
-                placeholder={
-                  canCreateBranch
-                    ? "feature/your-branch"
-                    : "You need write access to create branches"
-                }
-                className="flex-1 border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text placeholder:text-gh-text-muted disabled:opacity-50"
-              />
-              <button
-                type="button"
-                onClick={handleCreateBranch}
-                disabled={!canCreateBranch || !newBranchName.trim()}
-                className="px-3 py-2 rounded-md text-sm bg-gh-success-em text-white hover:bg-gh-success disabled:opacity-50"
-              >
-                Create branch
-              </button>
-            </div>
+            {canWrite && (
+              <div className="mb-4 flex gap-2">
+                <input
+                  type="text"
+                  value={newBranchName}
+                  onChange={(e) => setNewBranchName(e.target.value)}
+                  placeholder="feature/your-branch"
+                  className="flex-1 border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text placeholder:text-gh-text-muted"
+                />
+                <button
+                  type="button"
+                  onClick={handleCreateBranch}
+                  disabled={!newBranchName.trim()}
+                  className="px-3 py-2 rounded-md text-sm bg-gh-success-em text-white hover:bg-gh-success disabled:opacity-50"
+                >
+                  Create branch
+                </button>
+              </div>
+            )}
 
             <div className="divide-y divide-gh-border-muted rounded-lg border border-gh-border overflow-hidden">
               {visibleBranches.map((branch) => (
@@ -503,7 +434,7 @@ export function RepositoryManagement({
                       )}
                     </div>
                     <div className="text-xs text-gh-text-secondary mt-1">
-                      Last commit {timeAgo(branch.last_commit_at)}
+                      Last commit {timeAgo(branch.last_commit_at, { emptyLabel: "No commits yet" })}
                     </div>
                   </div>
 
@@ -569,135 +500,131 @@ export function RepositoryManagement({
             </div>
           </section>
 
-          <section className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <Settings size={17} className="text-gh-accent" />
-              <h3 className="font-semibold text-gh-text">
-                Repository Configuration
-              </h3>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm text-gh-text mb-1.5">
-                  Repository name
-                </label>
-                <input
-                  type="text"
-                  disabled={!canAdmin}
-                  value={repoForm.name}
-                  onChange={(e) =>
-                    setRepoForm((p) => ({ ...p, name: e.target.value }))
-                  }
-                  className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text disabled:opacity-60"
-                />
+          {canAdmin && (
+            <section className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Settings size={17} className="text-gh-accent" />
+                <h3 className="font-semibold text-gh-text">
+                  Repository Configuration
+                </h3>
               </div>
 
-              <div>
-                <label className="block text-sm text-gh-text mb-1.5">
-                  Visibility
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-gh-text mb-1.5">
+                    Repository name
+                  </label>
+                  <input
+                    type="text"
+                    value={repoForm.name}
+                    onChange={(e) =>
+                      setRepoForm((p) => ({ ...p, name: e.target.value }))
+                    }
+                    className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gh-text mb-1.5">
+                    Visibility
+                  </label>
+                  <select
+                    value={repoForm.visibility}
+                    onChange={(e) =>
+                      setRepoForm((p) => ({ ...p, visibility: e.target.value }))
+                    }
+                    className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text"
+                  >
+                    <option value="public">Public</option>
+                    <option value="private">Private</option>
+                  </select>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gh-text mb-1.5">
+                    Description
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={repoForm.description}
+                    onChange={(e) =>
+                      setRepoForm((p) => ({ ...p, description: e.target.value }))
+                    }
+                    className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gh-text mb-1.5">
+                    License
+                  </label>
+                  <select
+                    value={repoForm.license_type}
+                    onChange={(e) =>
+                      setRepoForm((p) => ({ ...p, license_type: e.target.value }))
+                    }
+                    className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text"
+                  >
+                    {LICENSE_OPTIONS.map((opt) => (
+                      <option key={opt.label} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gh-text mb-1.5">
+                    Default branch
+                  </label>
+                  <select
+                    value={repoForm.default_branch}
+                    onChange={(e) =>
+                      setRepoForm((p) => ({
+                        ...p,
+                        default_branch: e.target.value,
+                      }))
+                    }
+                    className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text"
+                  >
+                    {branches.map((branch) => (
+                      <option key={branch.branch_id} value={branch.name}>
+                        {branch.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <label className="md:col-span-2 flex items-center gap-2 text-sm text-gh-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={repoForm.has_readme}
+                    onChange={(e) =>
+                      setRepoForm((p) => ({ ...p, has_readme: e.target.checked }))
+                    }
+                    className="accent-gh-accent"
+                  />
+                  Repository has README
                 </label>
-                <select
-                  disabled={!canAdmin}
-                  value={repoForm.visibility}
-                  onChange={(e) =>
-                    setRepoForm((p) => ({ ...p, visibility: e.target.value }))
-                  }
-                  className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text disabled:opacity-60"
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleSaveSettings}
+                  disabled={saving}
+                  className="px-4 py-2 rounded-md text-sm bg-gh-accent-em text-white hover:bg-gh-accent disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  <option value="public">Public</option>
-                  <option value="private">Private</option>
-                </select>
+                  {saving ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Save size={14} />
+                  )}
+                  Save settings
+                </button>
               </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-sm text-gh-text mb-1.5">
-                  Description
-                </label>
-                <textarea
-                  rows={3}
-                  disabled={!canAdmin}
-                  value={repoForm.description}
-                  onChange={(e) =>
-                    setRepoForm((p) => ({ ...p, description: e.target.value }))
-                  }
-                  className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text disabled:opacity-60"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-gh-text mb-1.5">
-                  License
-                </label>
-                <select
-                  disabled={!canAdmin}
-                  value={repoForm.license_type}
-                  onChange={(e) =>
-                    setRepoForm((p) => ({ ...p, license_type: e.target.value }))
-                  }
-                  className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text disabled:opacity-60"
-                >
-                  {LICENSE_OPTIONS.map((opt) => (
-                    <option key={opt.label} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm text-gh-text mb-1.5">
-                  Default branch
-                </label>
-                <select
-                  disabled={!canAdmin}
-                  value={repoForm.default_branch}
-                  onChange={(e) =>
-                    setRepoForm((p) => ({
-                      ...p,
-                      default_branch: e.target.value,
-                    }))
-                  }
-                  className="w-full border border-gh-border rounded-md px-3 py-2 text-sm bg-gh-canvas text-gh-text disabled:opacity-60"
-                >
-                  {branches.map((branch) => (
-                    <option key={branch.branch_id} value={branch.name}>
-                      {branch.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <label className="md:col-span-2 flex items-center gap-2 text-sm text-gh-text-secondary">
-                <input
-                  type="checkbox"
-                  disabled={!canAdmin}
-                  checked={repoForm.has_readme}
-                  onChange={(e) =>
-                    setRepoForm((p) => ({ ...p, has_readme: e.target.checked }))
-                  }
-                  className="accent-gh-accent"
-                />
-                Repository has README
-              </label>
-            </div>
-
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={handleSaveSettings}
-                disabled={!canAdmin || saving}
-                className="px-4 py-2 rounded-md text-sm bg-gh-accent-em text-white hover:bg-gh-accent disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {saving ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Save size={14} />
-                )}
-                Save settings
-              </button>
-            </div>
-          </section>
+            </section>
+          )}
 
           {canAdmin && (
             <section className="rounded-xl border border-gh-danger/40 bg-red-400/5 p-5">
@@ -727,62 +654,6 @@ export function RepositoryManagement({
             </section>
           )}
         </>
-      )}
-
-      {(canAdmin || deletedRepos.length > 0) && (
-        <section className="rounded-xl border border-gh-border bg-gh-canvas-subtle p-5">
-          <h3 className="font-semibold text-gh-text mb-2">Repository Trash</h3>
-          <p className="text-sm text-gh-text-secondary mb-4">
-            Deleted repositories stay here for 30 days. You can restore them or
-            permanently delete them.
-          </p>
-
-          {deletedRepos.length === 0 ? (
-            <p className="text-sm text-gh-text-secondary">Trash is empty.</p>
-          ) : (
-            <div className="divide-y divide-gh-border-muted rounded-lg border border-gh-border overflow-hidden">
-              {deletedRepos.map((deletedRepo) => (
-                <div
-                  key={deletedRepo.repository_id}
-                  className="px-4 py-3 bg-gh-canvas flex flex-wrap items-center gap-3"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm text-gh-text font-medium truncate">
-                      {deletedRepo.name}
-                    </div>
-                    <div className="text-xs text-gh-text-secondary mt-1">
-                      Deleted {timeAgo(deletedRepo.deleted_at)} •{" "}
-                      {deletedRepo.days_left} day(s) left to restore
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleRestoreRepository(
-                          deletedRepo.repository_id,
-                          deletedRepo.name,
-                        )
-                      }
-                      disabled={deletedRepo.days_left <= 0}
-                      className="text-xs px-2.5 py-1.5 rounded-md border border-gh-border text-gh-text hover:bg-gh-overlay disabled:opacity-50 flex items-center gap-1"
-                    >
-                      <RotateCcw size={12} />
-                      Restore
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setToPermanentDelete(deletedRepo)}
-                      className="text-xs px-2.5 py-1.5 rounded-md border border-gh-danger/40 text-gh-danger hover:bg-red-400/10"
-                    >
-                      Permanently delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
       )}
 
       {toDeleteBranch && (
@@ -823,49 +694,6 @@ export function RepositoryManagement({
         </div>
       )}
 
-      {toPermanentDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="fixed inset-0 bg-black/70"
-            onClick={() => setToPermanentDelete(null)}
-            aria-hidden="true"
-          />
-          <div className="relative w-full max-w-md bg-gh-canvas-subtle border border-gh-border rounded-xl p-5">
-            <h4 className="text-base font-semibold text-gh-text">
-              Permanently delete repository
-            </h4>
-            <p className="text-sm text-gh-text-secondary mt-2">
-              Permanently delete{" "}
-              <span className="font-medium text-gh-text">
-                {toPermanentDelete.name}
-              </span>
-              ? This cannot be undone.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setToPermanentDelete(null)}
-                className="px-3 py-1.5 text-sm border border-gh-border rounded-md text-gh-text"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handlePermanentDeleteRepository}
-                className="px-3 py-1.5 text-sm rounded-md bg-gh-danger-em text-white"
-              >
-                Permanently delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <CreateRepositoryModal
-        isOpen={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreate={handleCreateRepository}
-      />
     </div>
   );
 }

@@ -3,33 +3,29 @@ import { Loader2, Inbox, Check, X, GitBranch, Lock, Globe } from 'lucide-react';
 import { collabApi } from '../../services/collabApi.js';
 import { Avatar } from './Avatar.jsx';
 import { RoleBadge } from './RoleBadge.jsx';
-
-function timeAgo(dateStr) {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-}
+import { timeAgo } from '../../utils/datetime.js';
 
 export function PendingInvitations({ currentUserId, onRespond }) {
   const [invitations, setInvitations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [respondingTo, setRespondingTo] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (options = {}) => {
+    const { silent = false } = options;
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const data = await collabApi.getPendingInvitations(currentUserId);
       setInvitations(data);
     } catch {
-      setInvitations([]);
+      if (!silent) {
+        setInvitations([]);
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [currentUserId]);
 
@@ -37,10 +33,23 @@ export function PendingInvitations({ currentUserId, onRespond }) {
     load();
   }, [load]);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      load({ silent: true });
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [load]);
+
   const handleRespond = async (collabId, accept) => {
     setRespondingTo(collabId);
     try {
-      await collabApi.respondToInvitation(collabId, accept);
+      const invitation = invitations.find((i) => i.collaboration_id === collabId);
+      await collabApi.respondToInvitation(
+        collabId,
+        accept,
+        invitation?.repository_id,
+      );
       await load();
       onRespond?.();
     } finally {

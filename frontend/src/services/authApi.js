@@ -1,9 +1,17 @@
-import { API_BASE } from './collabApiConfig';
+import {
+    API_BASE,
+    clearAuthSession,
+    getAuthToken,
+    setAuthSession,
+} from './collabApiConfig';
 
 async function handleJson(res) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-        throw new Error(data.detail || 'Request failed');
+        const err = new Error(data.detail || 'Request failed');
+        err.status = res.status;
+        err.detail = data?.detail;
+        throw err;
     }
     return data;
 }
@@ -25,29 +33,29 @@ export async function login(payload) {
     });
     const data = await handleJson(res);
     // backend returns { token }
-    localStorage.setItem('auth_token', data.token);
-    // also remember username for backend logout
-    if (payload?.username) {
-        localStorage.setItem('auth_username', payload.username);
-    }
+    setAuthSession(data.token, payload?.username);
     return data;
 }
 
+export async function getCurrentUser() {
+    const token = getAuthToken();
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const res = await fetch(`${API_BASE}/auth/me`, { headers });
+    return handleJson(res);
+}
+
 export async function logout() {
-    const username = localStorage.getItem('auth_username');
+    const token = getAuthToken();
     try {
-        if (username) {
+        if (token) {
             await fetch(`${API_BASE}/auth/logout`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                // backend logout only uses username field from Login model
-                body: JSON.stringify({ username, password: '' }),
+                headers: { Authorization: `Bearer ${token}` },
             });
         }
     } catch {
         // ignore network/logout errors; we still clear local state
     }
 
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('auth_username');
+    clearAuthSession();
 }

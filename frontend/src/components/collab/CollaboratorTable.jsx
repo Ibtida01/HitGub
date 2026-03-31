@@ -1,22 +1,11 @@
 import { useState } from 'react';
-import { Trash2, MoreHorizontal, Check } from 'lucide-react';
+import { Trash2, MoreHorizontal, Check, LogOut } from 'lucide-react';
 import { ASSIGNABLE_ROLES } from '../../types/index.js';
 import { Avatar } from './Avatar.jsx';
 import { RoleBadge } from './RoleBadge.jsx';
 import { StatusBadge } from './StatusBadge.jsx';
 import { ConfirmDialog } from './ConfirmDialog.jsx';
-
-function timeAgo(dateStr) {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-}
+import { timeAgo } from '../../utils/datetime.js';
 
 export function CollaboratorTable({
   collaborators,
@@ -24,8 +13,10 @@ export function CollaboratorTable({
   currentUserId,
   onRoleChange,
   onRemove,
+  onLeaveSelf,
 }) {
   const [removeTarget, setRemoveTarget] = useState(null);
+  const [leaveTarget, setLeaveTarget] = useState(null);
   const [actionLoading, setActionLoading] = useState(null);
   const [openMenu, setOpenMenu] = useState(null);
 
@@ -35,10 +26,10 @@ export function CollaboratorTable({
     return currentUserRole === 'owner';
   };
 
-  const handleRoleChange = async (collabId, newRole) => {
-    setActionLoading(collabId);
+  const handleRoleChange = async (collab, newRole) => {
+    setActionLoading(collab.collaboration_id);
     try {
-      await onRoleChange(collabId, newRole);
+      await onRoleChange(collab.user_id, newRole);
     } finally {
       setActionLoading(null);
     }
@@ -48,10 +39,21 @@ export function CollaboratorTable({
     if (!removeTarget) return;
     setActionLoading(removeTarget.collaboration_id);
     try {
-      await onRemove(removeTarget.collaboration_id);
+      await onRemove(removeTarget.user_id);
     } finally {
       setActionLoading(null);
       setRemoveTarget(null);
+    }
+  };
+
+  const handleLeave = async () => {
+    if (!leaveTarget || typeof onLeaveSelf !== 'function') return;
+    setActionLoading(leaveTarget.collaboration_id);
+    try {
+      await onLeaveSelf(leaveTarget.user_id);
+    } finally {
+      setActionLoading(null);
+      setLeaveTarget(null);
     }
   };
 
@@ -70,6 +72,10 @@ export function CollaboratorTable({
           const user = collab.user;
           if (!user) return null;
           const manageable = canManage(collab);
+          const canLeaveSelf =
+            collab.user_id === currentUserId &&
+            collab.role !== 'owner' &&
+            collab.status === 'accepted';
           const isLoading = actionLoading === collab.collaboration_id;
 
           return (
@@ -142,7 +148,7 @@ export function CollaboratorTable({
                                 onClick={() => {
                                   setOpenMenu(null);
                                   if (r !== collab.role) {
-                                    handleRoleChange(collab.collaboration_id, r);
+                                    handleRoleChange(collab, r);
                                   }
                                 }}
                                 className={`w-full flex items-center justify-between px-3 py-1.5 text-sm transition-colors ${
@@ -174,6 +180,17 @@ export function CollaboratorTable({
                     )}
                   </div>
                 )}
+
+                {canLeaveSelf && (
+                  <button
+                    type="button"
+                    onClick={() => setLeaveTarget(collab)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-gh-border text-xs text-gh-text-secondary hover:text-gh-danger hover:border-gh-danger/40 hover:bg-red-500/10 transition-colors"
+                  >
+                    <LogOut size={13} />
+                    Leave
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -188,6 +205,16 @@ export function CollaboratorTable({
         variant="danger"
         onConfirm={handleRemove}
         onCancel={() => setRemoveTarget(null)}
+      />
+
+      <ConfirmDialog
+        isOpen={!!leaveTarget}
+        title="Leave repository"
+        message="Are you sure you want to leave this repository? You will lose access immediately."
+        confirmLabel="Leave"
+        variant="danger"
+        onConfirm={handleLeave}
+        onCancel={() => setLeaveTarget(null)}
       />
     </>
   );

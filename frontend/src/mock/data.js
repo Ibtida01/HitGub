@@ -2,6 +2,8 @@ let nextCollabId = 20;
 let nextNotifId = 20;
 let nextRepoId = 10;
 let nextBranchId = 30;
+let nextCommitId = 10;
+let nextFileId = 30;
 
 export function getNextCollabId() {
   return nextCollabId++;
@@ -16,6 +18,14 @@ export function getNextRepoId() {
 
 export function getNextBranchId() {
   return nextBranchId++;
+}
+
+export function getNextCommitId() {
+  return nextCommitId++;
+}
+
+export function getNextFileId() {
+  return nextFileId++;
 }
 
 export const mockUsers = [
@@ -40,6 +50,84 @@ export const mockBranches = [
   { branch_id: 4, repository_id: 2, name: 'main', is_protected: false, is_default: true, created_by: 1, created_at: '2025-06-05T00:00:00Z', last_commit_hash: 'd'.repeat(40), last_commit_at: '2025-06-17T09:00:00Z' },
   { branch_id: 5, repository_id: 2, name: 'release/v1', is_protected: true, is_default: false, created_by: 1, created_at: '2025-06-08T00:00:00Z', last_commit_hash: 'e'.repeat(40), last_commit_at: '2025-06-19T15:00:00Z' },
   { branch_id: 6, repository_id: 3, name: 'main', is_protected: true, is_default: true, created_by: 2, created_at: '2025-06-10T00:00:00Z', last_commit_hash: 'f'.repeat(40), last_commit_at: '2025-06-21T12:25:00Z' },
+];
+
+export const mockBranchCommits = [
+  {
+    commit_id: 1,
+    repository_id: 1,
+    branch_id: 1,
+    author_id: 1,
+    message: 'Initial repository scaffold',
+    created_at: '2025-06-01T10:00:00Z',
+  },
+  {
+    commit_id: 2,
+    repository_id: 1,
+    branch_id: 2,
+    author_id: 1,
+    message: 'Create develop branch baseline',
+    created_at: '2025-06-03T09:20:00Z',
+  },
+];
+
+export const mockBranchFiles = [
+  {
+    file_id: 1,
+    repository_id: 1,
+    branch_id: 1,
+    path: 'README.md',
+    filename: 'README.md',
+    mime_type: 'text/markdown',
+    size_bytes: 74,
+    content_base64: btoa('# github-clone\n\nRepository management and collaboration demo project.\n'),
+    uploaded_by: 1,
+    commit_id: 1,
+    created_at: '2025-06-01T10:00:00Z',
+    updated_at: '2025-06-01T10:00:00Z',
+  },
+  {
+    file_id: 2,
+    repository_id: 1,
+    branch_id: 1,
+    path: 'src/app.js',
+    filename: 'app.js',
+    mime_type: 'text/javascript',
+    size_bytes: 47,
+    content_base64: btoa("console.log('HitGub main branch app entry');\n"),
+    uploaded_by: 1,
+    commit_id: 1,
+    created_at: '2025-06-01T10:00:00Z',
+    updated_at: '2025-06-01T10:00:00Z',
+  },
+  {
+    file_id: 3,
+    repository_id: 1,
+    branch_id: 2,
+    path: 'README.md',
+    filename: 'README.md',
+    mime_type: 'text/markdown',
+    size_bytes: 86,
+    content_base64: btoa('# github-clone (develop)\n\nThis branch contains in-progress development changes.\n'),
+    uploaded_by: 1,
+    commit_id: 2,
+    created_at: '2025-06-03T09:20:00Z',
+    updated_at: '2025-06-03T09:20:00Z',
+  },
+  {
+    file_id: 4,
+    repository_id: 1,
+    branch_id: 2,
+    path: 'src/feature/auth.js',
+    filename: 'auth.js',
+    mime_type: 'text/javascript',
+    size_bytes: 41,
+    content_base64: btoa("export const authReady = () => true;\n"),
+    uploaded_by: 3,
+    commit_id: 2,
+    created_at: '2025-06-03T09:20:00Z',
+    updated_at: '2025-06-03T09:20:00Z',
+  },
 ];
 
 export const mockCollaborators = [

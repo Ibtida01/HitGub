@@ -26,10 +26,9 @@ export function PermissionInfo() {
           Permission levels
         </h2>
         <p className="text-sm text-gh-text-secondary mt-0.5">
-          Schema roles: <code className="text-gh-accent">owner</code>,{' '}
-          <code className="text-gh-accent">contributor</code>,{' '}
-          <code className="text-gh-accent">read-only</code> (see{' '}
-          <code className="text-gh-text-muted">database/init.sql</code>).
+          Repository roles: <code className="text-gh-accent">owner</code>,{' '}
+          <code className="text-gh-accent">contributor</code>, and{' '}
+          <code className="text-gh-accent">read-only</code>.
         </p>
       </div>
 

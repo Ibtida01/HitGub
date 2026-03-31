@@ -12,7 +12,7 @@ const FILTER_TABS = [
   { key: 'pending', label: 'Pending' },
 ];
 
-export function CollaboratorSettings({ repoId, currentUserId }) {
+export function CollaboratorSettings({ repoId, currentUserId, onLeftRepository }) {
   const [collaborators, setCollaborators] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentUserRole, setCurrentUserRole] = useState(null);
@@ -26,19 +26,28 @@ export function CollaboratorSettings({ repoId, currentUserId }) {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async (options = {}) => {
+    const { silent = false } = options;
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const [collabs, role] = await Promise.all([
         collabApi.getCollaborators(repoId),
         collabApi.getCurrentUserRole(repoId, currentUserId),
       ]);
-      setCollaborators(collabs);
+      setCollaborators(
+        collabs.filter((c) => c.status === 'accepted' || c.status === 'pending')
+      );
       setCurrentUserRole(role);
     } catch {
-      showToast('error', 'Failed to load collaborators');
+      if (!silent) {
+        showToast('error', 'Failed to load collaborators');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [repoId, currentUserId, showToast]);
 
@@ -46,22 +55,74 @@ export function CollaboratorSettings({ repoId, currentUserId }) {
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchData({ silent: true });
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
   const handleInvite = async (userId, role) => {
-    await collabApi.inviteCollaborator(repoId, userId, role, currentUserId);
-    showToast('success', 'Invitation sent successfully');
-    await fetchData();
+    try {
+      await collabApi.inviteCollaborator(repoId, userId, role, currentUserId);
+      showToast('success', 'Invitation sent successfully');
+      await fetchData();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to send invitation';
+      showToast('error', message);
+      throw e;
+    }
   };
 
-  const handleRoleChange = async (collabId, newRole) => {
-    await collabApi.updateRole(collabId, newRole);
-    showToast('success', 'Role updated successfully');
-    await fetchData();
+  const handleCancelInvitation = async (userId) => {
+    try {
+      await collabApi.removeCollaborator(repoId, userId);
+      showToast('success', 'Pending invitation canceled');
+      await fetchData();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to cancel invitation';
+      showToast('error', message);
+      throw e;
+    }
   };
 
-  const handleRemove = async (collabId) => {
-    await collabApi.removeCollaborator(collabId);
-    showToast('success', 'Collaborator removed');
-    await fetchData();
+  const handleRoleChange = async (userId, newRole) => {
+    try {
+      await collabApi.updateRole(repoId, userId, newRole);
+      showToast('success', 'Role updated successfully');
+      await fetchData();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to update role';
+      showToast('error', message);
+      throw e;
+    }
+  };
+
+  const handleRemove = async (userId) => {
+    try {
+      await collabApi.removeCollaborator(repoId, userId);
+      showToast('success', 'Collaborator removed');
+      await fetchData();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to remove collaborator';
+      showToast('error', message);
+      throw e;
+    }
+  };
+
+  const handleLeaveSelf = async () => {
+    try {
+      await collabApi.removeCollaborator(repoId, currentUserId);
+      showToast('success', 'You left the repository');
+      if (typeof onLeftRepository === 'function') {
+        onLeftRepository(repoId);
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to leave repository';
+      showToast('error', message);
+      throw e;
+    }
   };
 
   const canInvite = currentUserRole === 'owner';
@@ -82,7 +143,12 @@ export function CollaboratorSettings({ repoId, currentUserId }) {
   });
 
   const pendingCount = collaborators.filter((c) => c.status === 'pending').length;
-  const existingUserIds = collaborators.map((c) => c.user_id);
+  const activeOrPendingCollaborators = collaborators.filter(
+    (c) => c.status === 'accepted' || c.status === 'pending'
+  );
+  const existingCollaboratorsByUserId = Object.fromEntries(
+    activeOrPendingCollaborators.map((c) => [c.user_id, c])
+  );
 
   if (loading) {
     return (
@@ -191,6 +257,7 @@ export function CollaboratorSettings({ repoId, currentUserId }) {
           currentUserId={currentUserId}
           onRoleChange={handleRoleChange}
           onRemove={handleRemove}
+          onLeaveSelf={handleLeaveSelf}
         />
       </div>
 
@@ -205,8 +272,9 @@ export function CollaboratorSettings({ repoId, currentUserId }) {
       <InviteModal
         isOpen={inviteOpen}
         currentUserRole={currentUserRole}
-        existingUserIds={existingUserIds}
+        existingCollaboratorsByUserId={existingCollaboratorsByUserId}
         onInvite={handleInvite}
+        onCancelInvitation={handleCancelInvitation}
         onClose={() => setInviteOpen(false)}
       />
     </div>

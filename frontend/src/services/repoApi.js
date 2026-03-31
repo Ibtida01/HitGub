@@ -25,11 +25,15 @@ import {
   mockRepositories,
   mockCollaborators,
   mockBranches,
+  mockBranchCommits,
+  mockBranchFiles,
   getNextRepoId,
   getNextBranchId,
   getNextCollabId,
+  getNextCommitId,
+  getNextFileId,
 } from '../mock/data';
-import { API_BASE, authHeaders } from './collabApiConfig';
+import { API_BASE, authHeaders, getAuthToken } from './collabApiConfig';
 
 export const REPO_USE_MOCK = import.meta.env.VITE_REPO_USE_MOCK !== 'false';
 
@@ -39,6 +43,7 @@ const LICENSE_OPTIONS = new Set(['MIT', 'Apache-2.0', 'GPL-3.0', 'BSD-3-Clause',
 const RESTORE_WINDOW_DAYS = 30;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const mockBranchDirectories = [];
 
 function repoRole(repoId, userId) {
   const repo = mockRepositories.find((r) => r.repository_id === repoId);
@@ -94,6 +99,197 @@ function toBranchDTO(branch) {
     ...branch,
     created_by_user: creator,
   };
+}
+
+function normalizeDirectoryPath(pathValue) {
+  if (!pathValue) return '';
+  const normalized = String(pathValue).replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, '');
+  if (!normalized) return '';
+
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.some((part) => part === '.' || part === '..')) {
+    throw new Error('Invalid path');
+  }
+  return parts.join('/');
+}
+
+function normalizeFilePath(pathValue) {
+  const normalized = normalizeDirectoryPath(pathValue);
+  if (!normalized) {
+    throw new Error('File path is required');
+  }
+  return normalized;
+}
+
+function joinBranchPath(directory, filename) {
+  return directory ? `${directory}/${filename}` : filename;
+}
+
+function directoryName(pathValue) {
+  const normalized = normalizeDirectoryPath(pathValue);
+  return normalized.split('/').pop();
+}
+
+function iterDirectoryAncestors(pathValue) {
+  const normalized = normalizeDirectoryPath(pathValue);
+  if (!normalized) return [];
+  const parts = normalized.split('/');
+  return parts.map((_, idx) => parts.slice(0, idx + 1).join('/'));
+}
+
+function touchMockDirectoryHierarchy(repoId, branchId, directoryPath, actorId, commitId, timestamp) {
+  const ancestors = iterDirectoryAncestors(directoryPath);
+  ancestors.forEach((dirPath) => {
+    const existingIdx = mockBranchDirectories.findIndex(
+      (d) => d.repository_id === repoId && d.branch_id === branchId && d.path === dirPath
+    );
+
+    const record = {
+      directory_id:
+        existingIdx >= 0
+          ? mockBranchDirectories[existingIdx].directory_id
+          : `dir-${repoId}-${branchId}-${dirPath}`,
+      repository_id: repoId,
+      branch_id: branchId,
+      path: dirPath,
+      name: directoryName(dirPath),
+      created_by:
+        existingIdx >= 0 ? mockBranchDirectories[existingIdx].created_by : actorId,
+      last_touched_by: actorId,
+      commit_id: commitId,
+      created_at:
+        existingIdx >= 0 ? mockBranchDirectories[existingIdx].created_at : timestamp,
+      updated_at: timestamp,
+    };
+
+    if (existingIdx >= 0) {
+      mockBranchDirectories[existingIdx] = record;
+    } else {
+      mockBranchDirectories.push(record);
+    }
+  });
+}
+
+function extractUploadDescriptor(entry) {
+  if (entry && typeof entry === 'object' && entry.file) {
+    return {
+      file: entry.file,
+      relativePath: entry.relativePath || '',
+    };
+  }
+
+  const file = entry;
+  const relativePath = file?.webkitRelativePath || '';
+  return { file, relativePath };
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  bytes.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  return btoa(binary);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64 || '');
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function buildBranchEntries(fileRows, directoryRows, currentPath) {
+  const directoryEntries = new Map();
+  const fileEntries = [];
+  const prefix = currentPath ? `${currentPath}/` : '';
+  const commitById = new Map(mockBranchCommits.map((c) => [c.commit_id, c.message]));
+
+  const touchDirectory = (directoryPath, metadata = {}) => {
+    const existing = directoryEntries.get(directoryPath);
+    const payload = {
+      type: 'dir',
+      name: directoryName(directoryPath),
+      path: directoryPath,
+      updated_at: metadata.updated_at ?? null,
+      commit_message: metadata.commit_message ?? null,
+    };
+
+    if (!existing) {
+      directoryEntries.set(directoryPath, payload);
+      return;
+    }
+
+    if (
+      payload.updated_at &&
+      (!existing.updated_at || new Date(payload.updated_at).getTime() > new Date(existing.updated_at).getTime())
+    ) {
+      directoryEntries.set(directoryPath, payload);
+    }
+  };
+
+  directoryRows.forEach((row) => {
+    const fullPath = row.path;
+    if (currentPath && !fullPath.startsWith(prefix)) {
+      return;
+    }
+
+    const relativePath = currentPath ? fullPath.slice(prefix.length) : fullPath;
+    if (!relativePath) {
+      return;
+    }
+
+    if (relativePath.includes('/')) {
+      const dirname = relativePath.split('/')[0];
+      const directoryPath = joinBranchPath(currentPath, dirname);
+      touchDirectory(directoryPath);
+      return;
+    }
+
+    touchDirectory(fullPath, {
+      updated_at: row.updated_at,
+      commit_message: row.commit_message || commitById.get(row.commit_id) || null,
+    });
+  });
+
+  fileRows.forEach((row) => {
+    const fullPath = row.path;
+    if (currentPath && !fullPath.startsWith(prefix)) {
+      return;
+    }
+
+    const relativePath = currentPath ? fullPath.slice(prefix.length) : fullPath;
+    if (!relativePath) {
+      return;
+    }
+
+    if (relativePath.includes('/')) {
+      const dirname = relativePath.split('/')[0];
+      const directoryPath = joinBranchPath(currentPath, dirname);
+      touchDirectory(directoryPath);
+      return;
+    }
+
+    fileEntries.push({
+      type: 'file',
+      file_id: row.file_id,
+      name: row.filename,
+      path: row.path,
+      mime_type: row.mime_type,
+      size_bytes: row.size_bytes,
+      updated_at: row.updated_at,
+      uploaded_by: row.uploaded_by,
+      commit_id: row.commit_id,
+      commit_message: row.commit_message || commitById.get(row.commit_id) || null,
+    });
+  });
+
+  const directories = [...directoryEntries.values()].sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+  const files = fileEntries.sort((a, b) => a.name.localeCompare(b.name));
+  return [...directories, ...files];
 }
 
 function repositoryStats(repoId) {
@@ -152,6 +348,54 @@ export const repoApi = {
         (repo) =>
           (repo.owner_id === userId || memberRepoIds.has(repo.repository_id)) && !isDeleted(repo)
       )
+      .map(toRepositoryDTO)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  async listOwnedRepositories(userId) {
+    if (!REPO_USE_MOCK) {
+      const res = await fetch(`${API_BASE}/repos?scope=owned`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(160);
+    return mockRepositories
+      .filter((repo) => repo.owner_id === userId && !isDeleted(repo))
+      .map(toRepositoryDTO)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  async listDiscoverableRepositories(userId, query = '') {
+    if (!REPO_USE_MOCK) {
+      const params = new URLSearchParams({ scope: 'discover' });
+      const trimmed = String(query || '').trim();
+      if (trimmed) {
+        params.set('q', trimmed);
+      }
+      const res = await fetch(`${API_BASE}/repos?${params.toString()}`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(180);
+    const trimmed = String(query || '').trim().toLowerCase();
+
+    return mockRepositories
+      .filter((repo) => {
+        if (isDeleted(repo)) return false;
+
+        const role = repoRole(repo.repository_id, userId);
+        const canSee = repo.visibility === 'public' || !!role;
+        if (!canSee) return false;
+
+        if (!trimmed) return true;
+        const owner = mockUsers.find((u) => u.user_id === repo.owner_id);
+        const haystack = [repo.name, repo.description || '', owner?.username || '']
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(trimmed);
+      })
       .map(toRepositoryDTO)
       .sort((a, b) => a.name.localeCompare(b.name));
   },
@@ -627,5 +871,405 @@ export const repoApi = {
     }
 
     mockBranches.splice(idx, 1);
+  },
+
+  async listBranchFiles(repoId, branchId, path = '') {
+    if (!REPO_USE_MOCK) {
+      const query = new URLSearchParams({ path });
+      const res = await fetch(`${API_BASE}/repos/${repoId}/branches/${branchId}/files?${query.toString()}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(180);
+    const currentPath = normalizeDirectoryPath(path);
+    const fileRows = mockBranchFiles.filter(
+      (f) => f.repository_id === repoId && f.branch_id === branchId
+    );
+    const directoryRows = mockBranchDirectories.filter(
+      (d) => d.repository_id === repoId && d.branch_id === branchId
+    );
+
+    return {
+      repository_id: repoId,
+      branch_id: branchId,
+      path: currentPath,
+      entries: buildBranchEntries(fileRows, directoryRows, currentPath),
+    };
+  },
+
+  async uploadBranchFiles(repoId, branchId, payload, actorId) {
+    const commitMessage = (payload?.commitMessage || '').trim();
+    if (!commitMessage) {
+      throw new Error('Commit message is required.');
+    }
+    const selectedFiles = payload?.files || [];
+    if (!selectedFiles.length) {
+      throw new Error('Select at least one file to upload.');
+    }
+
+    const uploadDescriptors = selectedFiles.map(extractUploadDescriptor);
+    if (uploadDescriptors.some((entry) => !entry.file)) {
+      throw new Error('Invalid file selection.');
+    }
+
+    if (!REPO_USE_MOCK) {
+      const formData = new FormData();
+      formData.append('commit_message', commitMessage);
+      if (payload?.targetPath) {
+        formData.append('target_path', payload.targetPath);
+      }
+      const relativePaths = [];
+      uploadDescriptors.forEach(({ file, relativePath }) => {
+        formData.append('files', file);
+        relativePaths.push(relativePath || '');
+      });
+      if (relativePaths.some((pathValue) => !!pathValue)) {
+        formData.append('relative_paths', JSON.stringify(relativePaths));
+      }
+
+      const token = getAuthToken();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE}/repos/${repoId}/branches/${branchId}/files/upload`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(280);
+    assertWriteAccess(repoId, actorId, 'upload files');
+
+    const directory = normalizeDirectoryPath(payload?.targetPath || '');
+    const branch = mockBranches.find(
+      (b) => b.repository_id === repoId && b.branch_id === branchId
+    );
+    if (!branch) {
+      throw new Error('Branch not found');
+    }
+
+    const now = new Date().toISOString();
+    const commit = {
+      commit_id: getNextCommitId(),
+      repository_id: repoId,
+      branch_id: branchId,
+      author_id: actorId,
+      message: commitMessage,
+      created_at: now,
+    };
+    mockBranchCommits.push(commit);
+
+    const changedFiles = [];
+    for (const descriptor of uploadDescriptors) {
+      const file = descriptor.file;
+      const normalizedRelativePath = descriptor.relativePath
+        ? normalizeFilePath(descriptor.relativePath)
+        : '';
+
+      let directory = normalizeDirectoryPath(payload?.targetPath || '');
+      let fileName = (file?.name || '').split('/').pop();
+
+      if (normalizedRelativePath) {
+        const slashIdx = normalizedRelativePath.lastIndexOf('/');
+        const relDirectory = slashIdx >= 0 ? normalizedRelativePath.slice(0, slashIdx) : '';
+        fileName = slashIdx >= 0 ? normalizedRelativePath.slice(slashIdx + 1) : normalizedRelativePath;
+        directory = normalizeDirectoryPath(joinBranchPath(directory, relDirectory));
+      }
+
+      if (!fileName) {
+        throw new Error('Invalid file name');
+      }
+      const fullPath = joinBranchPath(directory, fileName);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+
+      if (directory) {
+        touchMockDirectoryHierarchy(
+          repoId,
+          branchId,
+          directory,
+          actorId,
+          commit.commit_id,
+          now
+        );
+      }
+
+      const existingIdx = mockBranchFiles.findIndex(
+        (f) => f.repository_id === repoId && f.branch_id === branchId && f.path === fullPath
+      );
+
+      const record = {
+        file_id: existingIdx >= 0 ? mockBranchFiles[existingIdx].file_id : getNextFileId(),
+        repository_id: repoId,
+        branch_id: branchId,
+        path: fullPath,
+        filename: fileName,
+        mime_type: file.type || 'application/octet-stream',
+        size_bytes: bytes.byteLength,
+        content_base64: bytesToBase64(bytes),
+        uploaded_by: actorId,
+        commit_id: commit.commit_id,
+        created_at: existingIdx >= 0 ? mockBranchFiles[existingIdx].created_at : now,
+        updated_at: now,
+      };
+
+      if (existingIdx >= 0) {
+        mockBranchFiles[existingIdx] = record;
+      } else {
+        mockBranchFiles.push(record);
+      }
+
+      changedFiles.push({
+        file_id: record.file_id,
+        path: record.path,
+        filename: record.filename,
+        mime_type: record.mime_type,
+        size_bytes: record.size_bytes,
+        updated_at: record.updated_at,
+      });
+    }
+
+    return {
+      repository_id: repoId,
+      branch_id: branchId,
+      commit: {
+        commit_id: commit.commit_id,
+        message: commit.message,
+        author_id: commit.author_id,
+        created_at: commit.created_at,
+      },
+      changed_files: changedFiles,
+    };
+  },
+
+  async createBranchFolder(repoId, branchId, payload, actorId) {
+    const folderPath = normalizeDirectoryPath(payload?.folderPath || '');
+    const commitMessage = (payload?.commitMessage || '').trim();
+
+    if (!folderPath) {
+      throw new Error('Folder path is required.');
+    }
+    if (!commitMessage) {
+      throw new Error('Commit message is required.');
+    }
+
+    if (!REPO_USE_MOCK) {
+      const res = await fetch(`${API_BASE}/repos/${repoId}/branches/${branchId}/folders`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ folder_path: folderPath, commit_message: commitMessage }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(220);
+    assertWriteAccess(repoId, actorId, 'create a folder');
+
+    const now = new Date().toISOString();
+    const commit = {
+      commit_id: getNextCommitId(),
+      repository_id: repoId,
+      branch_id: branchId,
+      author_id: actorId,
+      message: commitMessage,
+      created_at: now,
+    };
+    mockBranchCommits.push(commit);
+
+    touchMockDirectoryHierarchy(repoId, branchId, folderPath, actorId, commit.commit_id, now);
+
+    return {
+      repository_id: repoId,
+      branch_id: branchId,
+      directory: {
+        path: folderPath,
+        name: directoryName(folderPath),
+        updated_at: now,
+        commit_id: commit.commit_id,
+      },
+      commit,
+    };
+  },
+
+  async deleteBranchFile(repoId, branchId, filePath, commitMessage = '', actorId = null) {
+    const normalizedPath = normalizeFilePath(filePath);
+    const message = String(commitMessage || '').trim();
+
+    if (!REPO_USE_MOCK) {
+      const query = new URLSearchParams({ path: normalizedPath });
+      if (message) {
+        query.set('commit_message', message);
+      }
+      const res = await fetch(
+        `${API_BASE}/repos/${repoId}/branches/${branchId}/files?${query.toString()}`,
+        {
+          method: 'DELETE',
+          headers: authHeaders(),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(180);
+    assertWriteAccess(repoId, actorId, 'delete files');
+    const fileIdx = mockBranchFiles.findIndex(
+      (f) => f.repository_id === repoId && f.branch_id === branchId && f.path === normalizedPath
+    );
+    if (fileIdx < 0) {
+      throw new Error('File not found');
+    }
+
+    const now = new Date().toISOString();
+    const commit = {
+      commit_id: getNextCommitId(),
+      repository_id: repoId,
+      branch_id: branchId,
+      author_id: actorId ?? 0,
+      message: message || `Delete file ${normalizedPath}`,
+      created_at: now,
+    };
+    mockBranchCommits.push(commit);
+
+    const deleted = mockBranchFiles[fileIdx];
+    mockBranchFiles.splice(fileIdx, 1);
+
+    return {
+      detail: 'File deleted',
+      repository_id: repoId,
+      branch_id: branchId,
+      deleted_file: {
+        file_id: deleted.file_id,
+        path: deleted.path,
+        filename: deleted.filename,
+      },
+      commit,
+    };
+  },
+
+  async deleteBranchFolder(repoId, branchId, folderPath, commitMessage = '', actorId = null) {
+    const normalizedPath = normalizeDirectoryPath(folderPath);
+    if (!normalizedPath) {
+      throw new Error('Folder path is required.');
+    }
+
+    const message = String(commitMessage || '').trim();
+
+    if (!REPO_USE_MOCK) {
+      const query = new URLSearchParams({ path: normalizedPath });
+      if (message) {
+        query.set('commit_message', message);
+      }
+      const res = await fetch(
+        `${API_BASE}/repos/${repoId}/branches/${branchId}/folders?${query.toString()}`,
+        {
+          method: 'DELETE',
+          headers: authHeaders(),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    await delay(220);
+    assertWriteAccess(repoId, actorId, 'delete folders');
+    const prefix = `${normalizedPath}/`;
+    let deletedFiles = 0;
+    for (let i = mockBranchFiles.length - 1; i >= 0; i -= 1) {
+      const row = mockBranchFiles[i];
+      if (
+        row.repository_id === repoId &&
+        row.branch_id === branchId &&
+        (row.path === normalizedPath || row.path.startsWith(prefix))
+      ) {
+        mockBranchFiles.splice(i, 1);
+        deletedFiles += 1;
+      }
+    }
+
+    let deletedFolders = 0;
+    for (let i = mockBranchDirectories.length - 1; i >= 0; i -= 1) {
+      const row = mockBranchDirectories[i];
+      if (
+        row.repository_id === repoId &&
+        row.branch_id === branchId &&
+        (row.path === normalizedPath || row.path.startsWith(prefix))
+      ) {
+        mockBranchDirectories.splice(i, 1);
+        deletedFolders += 1;
+      }
+    }
+
+    if (deletedFiles === 0 && deletedFolders === 0) {
+      throw new Error('Folder not found');
+    }
+
+    const now = new Date().toISOString();
+    const commit = {
+      commit_id: getNextCommitId(),
+      repository_id: repoId,
+      branch_id: branchId,
+      author_id: actorId ?? 0,
+      message: message || `Delete folder ${normalizedPath}`,
+      created_at: now,
+    };
+    mockBranchCommits.push(commit);
+
+    return {
+      detail: 'Folder deleted',
+      repository_id: repoId,
+      branch_id: branchId,
+      path: normalizedPath,
+      deleted_files: deletedFiles,
+      deleted_folders: deletedFolders,
+      commit,
+    };
+  },
+
+  async downloadBranchFile(repoId, branchId, filePath) {
+    if (!REPO_USE_MOCK) {
+      const query = new URLSearchParams({ path: filePath });
+      const res = await fetch(
+        `${API_BASE}/repos/${repoId}/branches/${branchId}/files/raw?${query.toString()}`,
+        {
+          headers: authHeaders(),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      return res.blob();
+    }
+
+    await delay(120);
+    const normalizedPath = normalizeFilePath(filePath);
+    const row = mockBranchFiles.find(
+      (f) =>
+        f.repository_id === repoId && f.branch_id === branchId && f.path === normalizedPath
+    );
+    if (!row) {
+      throw new Error('File not found');
+    }
+
+    const bytes = base64ToBytes(row.content_base64);
+    return new Blob([bytes], { type: row.mime_type || 'application/octet-stream' });
+  },
+
+  async downloadBranchFolder(repoId, branchId, folderPath) {
+    if (!REPO_USE_MOCK) {
+      const query = new URLSearchParams({ path: folderPath });
+      const res = await fetch(
+        `${API_BASE}/repos/${repoId}/branches/${branchId}/folders/raw?${query.toString()}`,
+        {
+          headers: authHeaders(),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      return res.blob();
+    }
+
+    throw new Error('Folder download is not available in mock mode.');
   },
 };

@@ -51,6 +51,9 @@ export default function Signup({ onAuthSuccess, switchToLogin }) {
                             name="username"
                             value={form.username}
                             onChange={handleChange}
+                            placeholder="letters, numbers, _ or -"
+                            pattern="[A-Za-z0-9_-]+"
+                            title="Use letters, numbers, underscore, or hyphen"
                             className="w-full rounded-md border border-gh-border bg-gh-canvas px-3 py-2 text-sm text-gh-text focus:outline-none focus:ring-2 focus:ring-gh-accent-em focus:border-gh-accent-em"
                             required
                         />

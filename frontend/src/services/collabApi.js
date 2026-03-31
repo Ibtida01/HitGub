@@ -15,7 +15,38 @@ import { API_BASE, COLLAB_USE_MOCK, authHeaders } from './collabApiConfig';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function mapViewRowToCollaborator(row) {
+function buildApiError(status, text, fallbackMessage) {
+  let detail = text;
+
+  if (text) {
+    try {
+      const parsed = JSON.parse(text);
+      detail = parsed?.detail ?? parsed;
+    } catch {
+      // Keep plain-text response as-is.
+    }
+  }
+
+  let message = fallbackMessage;
+  if (typeof detail === 'string' && detail.trim()) {
+    message = detail;
+  } else if (detail && typeof detail === 'object') {
+    if (typeof detail.message === 'string' && detail.message.trim()) {
+      message = detail.message;
+    } else if (typeof detail.detail === 'string' && detail.detail.trim()) {
+      message = detail.detail;
+    }
+  }
+
+  const err = new Error(message);
+  err.status = status;
+  err.detail = detail;
+  err.raw = text;
+  return err;
+}
+
+export function mapViewRowToCollaborator(row, options = {}) {
+  const { useMockFallback = COLLAB_USE_MOCK } = options;
   const user = {
     user_id: row.user_id,
     username: row.username,
@@ -25,11 +56,13 @@ export function mapViewRowToCollaborator(row) {
     is_active: true,
     created_at: row.invited_at,
   };
-  const invitedByUser = row.invited_by_username
+  const invitedByUser = useMockFallback && row.invited_by_username
     ? mockUsers.find((u) => u.username === row.invited_by_username)
     : undefined;
   const invitedBy = row.invited_by ?? invitedByUser?.user_id ?? row.user_id;
-  const repository = mockRepositories.find((r) => r.repository_id === row.repository_id);
+  const repository = useMockFallback
+    ? mockRepositories.find((r) => r.repository_id === row.repository_id)
+    : null;
 
   return {
     collaboration_id: row.collaboration_id,
@@ -59,7 +92,12 @@ export function mapViewRowToCollaborator(row) {
   };
 }
 
-function populateCollaborator(c) {
+function populateCollaborator(c, options = {}) {
+  const { useMockFallback = COLLAB_USE_MOCK } = options;
+  if (!useMockFallback) {
+    return c;
+  }
+
   const u = mockUsers.find((x) => x.user_id === c.user_id);
   const inv = mockUsers.find((x) => x.user_id === c.invited_by);
   const repo = mockRepositories.find((r) => r.repository_id === c.repository_id);
@@ -80,14 +118,25 @@ function assertInviteRole(role) {
 export const collabApi = {
   async getCollaborators(repoId) {
     if (!COLLAB_USE_MOCK) {
-      const res = await fetch(`${API_BASE}/repos/${repoId}/collaborators`, {
+      const res = await fetch(`${API_BASE}/repos/${repoId}/collaborators?status=all`, {
         headers: authHeaders(),
       });
       if (!res.ok) {
-        throw new Error(`Failed to load collaborators: ${res.status}`);
+        const text = await res.text();
+        throw buildApiError(res.status, text, `Failed to load collaborators (${res.status})`);
       }
-      const rows = await res.json();
-      return rows.map((row) => populateCollaborator(mapViewRowToCollaborator(row)));
+      const payload = await res.json();
+      const rows = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.collaborators)
+          ? payload.collaborators
+          : [];
+      return rows.map((row) =>
+        populateCollaborator(
+          mapViewRowToCollaborator(row, { useMockFallback: false }),
+          { useMockFallback: false }
+        )
+      );
     }
     await delay(300);
     return mockCollaborators
@@ -101,11 +150,13 @@ export const collabApi = {
       const res = await fetch(`${API_BASE}/repos/${repoId}/collaborators/invite`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ user_id: userId, role }),
+        body: JSON.stringify({ invitee_id: userId, role }),
       });
-      if (!res.ok) throw new Error(await res.text());
-      const row = await res.json();
-      return populateCollaborator(mapViewRowToCollaborator(row));
+      if (!res.ok) {
+        const text = await res.text();
+        throw buildApiError(res.status, text, 'Failed to send invitation');
+      }
+      return res.json();
     }
     await delay(500);
     const existing = mockCollaborators.find(
@@ -141,22 +192,26 @@ export const collabApi = {
     return populateCollaborator(newCollab);
   },
 
-  async updateRole(collabId, newRole) {
+  async updateRole(repoId, userId, newRole) {
     if (newRole === 'owner') {
       throw new Error('Promoting to owner is done via ownership transfer on the backend.');
     }
     if (!COLLAB_USE_MOCK) {
-      const res = await fetch(`${API_BASE}/collaborators/${collabId}/role`, {
+      const res = await fetch(`${API_BASE}/repos/${repoId}/collaborators/${userId}`, {
         method: 'PATCH',
         headers: authHeaders(),
-        body: JSON.stringify({ role: newRole }),
+        body: JSON.stringify({ new_role: newRole }),
       });
-      if (!res.ok) throw new Error(await res.text());
-      const row = await res.json();
-      return populateCollaborator(mapViewRowToCollaborator(row));
+      if (!res.ok) {
+        const text = await res.text();
+        throw buildApiError(res.status, text, 'Failed to update collaborator role');
+      }
+      return res.json();
     }
     await delay(300);
-    const collab = mockCollaborators.find((c) => c.collaboration_id === collabId);
+    const collab = mockCollaborators.find(
+      (c) => c.repository_id === repoId && c.user_id === userId
+    );
     if (!collab) throw new Error('Collaborator not found');
 
     const oldRole = collab.role;
@@ -177,17 +232,22 @@ export const collabApi = {
     return populateCollaborator(collab);
   },
 
-  async removeCollaborator(collabId) {
+  async removeCollaborator(repoId, userId) {
     if (!COLLAB_USE_MOCK) {
-      const res = await fetch(`${API_BASE}/collaborators/${collabId}`, {
+      const res = await fetch(`${API_BASE}/repos/${repoId}/collaborators/${userId}`, {
         method: 'DELETE',
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const text = await res.text();
+        throw buildApiError(res.status, text, 'Failed to remove collaborator');
+      }
       return;
     }
     await delay(300);
-    const idx = mockCollaborators.findIndex((c) => c.collaboration_id === collabId);
+    const idx = mockCollaborators.findIndex(
+      (c) => c.repository_id === repoId && c.user_id === userId
+    );
     if (idx === -1) throw new Error('Collaborator not found');
 
     const collab = mockCollaborators[idx];
@@ -206,18 +266,19 @@ export const collabApi = {
     mockCollaborators.splice(idx, 1);
   },
 
-  async respondToInvitation(collabId, accept) {
+  async respondToInvitation(collabOrRepoId, accept, maybeRepoId) {
     if (!COLLAB_USE_MOCK) {
-      const res = await fetch(`${API_BASE}/collaborations/${collabId}/respond`, {
+      const repoId = maybeRepoId ?? collabOrRepoId;
+      const res = await fetch(`${API_BASE}/repos/${repoId}/collaborators/respond`, {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ accept }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const row = await res.json();
-      return populateCollaborator(mapViewRowToCollaborator(row));
+      return res.json();
     }
     await delay(400);
+    const collabId = collabOrRepoId;
     const collab = mockCollaborators.find((c) => c.collaboration_id === collabId);
     if (!collab) throw new Error('Invitation not found');
 
@@ -243,7 +304,7 @@ export const collabApi = {
   async searchUsers(query) {
     if (!COLLAB_USE_MOCK) {
       const res = await fetch(
-        `${API_BASE}/users/search?q=${encodeURIComponent(query)}`,
+        `${API_BASE}/auth/users/search?q=${encodeURIComponent(query)}`,
         { headers: authHeaders() }
       );
       if (!res.ok) throw new Error(await res.text());
@@ -263,12 +324,18 @@ export const collabApi = {
 
   async getPendingInvitations(userId) {
     if (!COLLAB_USE_MOCK) {
-      const res = await fetch(`${API_BASE}/users/me/collaborations/pending`, {
+      const res = await fetch(`${API_BASE}/auth/users/me/collaborations/pending`, {
         headers: authHeaders(),
       });
+      if (res.status === 404) return [];
       if (!res.ok) throw new Error(await res.text());
       const rows = await res.json();
-      return rows.map((row) => populateCollaborator(mapViewRowToCollaborator(row)));
+      return rows.map((row) =>
+        populateCollaborator(
+          mapViewRowToCollaborator(row, { useMockFallback: false }),
+          { useMockFallback: false }
+        )
+      );
     }
     await delay(300);
     return mockCollaborators
@@ -278,9 +345,10 @@ export const collabApi = {
 
   async getNotifications(userId) {
     if (!COLLAB_USE_MOCK) {
-      const res = await fetch(`${API_BASE}/users/me/notifications`, {
+      const res = await fetch(`${API_BASE}/auth/users/me/notifications`, {
         headers: authHeaders(),
       });
+      if (res.status === 404) return [];
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     }
@@ -292,10 +360,13 @@ export const collabApi = {
 
   async markNotificationRead(notifId) {
     if (!COLLAB_USE_MOCK) {
-      await fetch(`${API_BASE}/users/me/notifications/${notifId}/read`, {
+      const res = await fetch(`${API_BASE}/auth/users/me/notifications/${notifId}/read`, {
         method: 'POST',
         headers: authHeaders(),
       });
+      if (res.status !== 404 && !res.ok) {
+        throw new Error(await res.text());
+      }
       return;
     }
     await delay(100);
@@ -305,10 +376,13 @@ export const collabApi = {
 
   async markAllNotificationsRead(userId) {
     if (!COLLAB_USE_MOCK) {
-      await fetch(`${API_BASE}/users/me/notifications/read-all`, {
+      const res = await fetch(`${API_BASE}/auth/users/me/notifications/read-all`, {
         method: 'POST',
         headers: authHeaders(),
       });
+      if (res.status !== 404 && !res.ok) {
+        throw new Error(await res.text());
+      }
       return;
     }
     await delay(100);
@@ -317,6 +391,45 @@ export const collabApi = {
       .forEach((n) => {
         n.read = true;
       });
+  },
+
+  async clearNotification(notifId) {
+    if (!COLLAB_USE_MOCK) {
+      const res = await fetch(`${API_BASE}/auth/users/me/notifications/${notifId}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      if (res.status !== 404 && !res.ok) {
+        throw new Error(await res.text());
+      }
+      return;
+    }
+
+    await delay(100);
+    const idx = mockNotifications.findIndex((n) => n.id === notifId);
+    if (idx >= 0) {
+      mockNotifications.splice(idx, 1);
+    }
+  },
+
+  async clearAllNotifications(userId) {
+    if (!COLLAB_USE_MOCK) {
+      const res = await fetch(`${API_BASE}/auth/users/me/notifications`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      if (res.status !== 404 && !res.ok) {
+        throw new Error(await res.text());
+      }
+      return;
+    }
+
+    await delay(100);
+    for (let i = mockNotifications.length - 1; i >= 0; i -= 1) {
+      if (mockNotifications[i].target_user_id === userId) {
+        mockNotifications.splice(i, 1);
+      }
+    }
   },
 
   async getCurrentUserRole(repoId, userId) {

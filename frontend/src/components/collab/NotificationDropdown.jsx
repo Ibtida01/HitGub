@@ -7,8 +7,10 @@ import {
   Check,
   XCircle,
   CheckCheck,
+  Trash2,
 } from 'lucide-react';
 import { collabApi } from '../../services/collabApi.js';
+import { timeAgo } from '../../utils/datetime.js';
 
 const TYPE_CONFIG = {
   invitation: { Icon: UserPlus, color: 'text-gh-accent' },
@@ -18,19 +20,7 @@ const TYPE_CONFIG = {
   declined: { Icon: XCircle, color: 'text-gh-text-secondary' },
 };
 
-function timeAgo(dateStr) {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-}
-
-export function NotificationDropdown({ currentUserId }) {
+export function NotificationDropdown({ currentUserId, onNotificationNavigate }) {
   const [notifications, setNotifications] = useState([]);
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef(null);
@@ -67,9 +57,31 @@ export function NotificationDropdown({ currentUserId }) {
     await fetchNotifications();
   };
 
+  const handleClearAll = async () => {
+    await collabApi.clearAllNotifications(currentUserId);
+    await fetchNotifications();
+  };
+
   const handleMarkRead = async (id) => {
     await collabApi.markNotificationRead(id);
     await fetchNotifications();
+  };
+
+  const handleClearOne = async (notifId) => {
+    await collabApi.clearNotification(notifId);
+    await fetchNotifications();
+  };
+
+  const handleNotificationClick = async (notif) => {
+    if (!notif?.read) {
+      await handleMarkRead(notif.id);
+    }
+
+    if (typeof onNotificationNavigate === 'function') {
+      onNotificationNavigate(notif);
+    }
+
+    setOpen(false);
   };
 
   return (
@@ -94,16 +106,28 @@ export function NotificationDropdown({ currentUserId }) {
         <div className="absolute right-0 top-full mt-2 w-96 bg-gh-canvas-subtle border border-gh-border rounded-xl shadow-xl shadow-black/40 z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gh-border">
             <h3 className="text-sm font-semibold text-gh-text">Notifications</h3>
-            {unreadCount > 0 && (
-              <button
-                type="button"
-                onClick={handleMarkAllRead}
-                className="flex items-center gap-1 text-xs text-gh-accent hover:text-gh-accent font-medium hover:underline"
-              >
-                <CheckCheck size={14} />
-                Mark all read
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleMarkAllRead}
+                  className="flex items-center gap-1 text-xs text-gh-accent hover:text-gh-accent font-medium hover:underline"
+                >
+                  <CheckCheck size={14} />
+                  Mark all read
+                </button>
+              )}
+              {notifications.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAll}
+                  className="flex items-center gap-1 text-xs text-gh-danger hover:text-gh-danger font-medium hover:underline"
+                >
+                  <Trash2 size={14} />
+                  Clear all
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="max-h-80 overflow-y-auto">
@@ -117,25 +141,37 @@ export function NotificationDropdown({ currentUserId }) {
                 const cfg = TYPE_CONFIG[notif.type] ?? TYPE_CONFIG.invitation;
                 const Icon = cfg.Icon;
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={notif.id}
-                    onClick={() => handleMarkRead(notif.id)}
                     className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gh-overlay transition-colors border-b border-gh-border-muted last:border-b-0 ${
                       !notif.read ? 'bg-gh-accent/5' : ''
                     }`}
                   >
-                    <div className={`mt-0.5 ${cfg.color}`}>
-                      <Icon size={16} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-gh-text leading-snug">{notif.message}</p>
-                      <p className="text-xs text-gh-text-muted mt-1">{timeAgo(notif.created_at)}</p>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleNotificationClick(notif)}
+                      className="flex items-start gap-3 flex-1 min-w-0 text-left"
+                    >
+                      <div className={`mt-0.5 ${cfg.color}`}>
+                        <Icon size={16} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-gh-text leading-snug">{notif.message}</p>
+                        <p className="text-xs text-gh-text-muted mt-1">{timeAgo(notif.created_at)}</p>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Clear notification"
+                      onClick={() => handleClearOne(notif.id)}
+                      className="mt-0.5 p-1 rounded text-gh-text-muted hover:text-gh-danger hover:bg-red-500/10 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                     {!notif.read && (
                       <div className="mt-1.5 w-2 h-2 rounded-full bg-gh-accent shrink-0" />
                     )}
-                  </button>
+                  </div>
                 );
               })
             )}

@@ -5,6 +5,10 @@ const CONFIG = {
 };
 
 export function StatusBadge({ status }) {
+  if (status === 'accepted') {
+    return null;
+  }
+
   const { label, style } = CONFIG[status] ?? CONFIG.pending;
   return (
     <span
