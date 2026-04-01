@@ -15,9 +15,9 @@ async def create_database_pool():
         user=os.getenv("PGUSER", "myuser"),
         password=os.getenv("PGPASSWORD", "mypassword"),
         database=os.getenv("PGDATABASE", "hitgub"),
-        host=os.getenv("PGHOST", "127.0.0.1"),
+        host=os.getenv("PGHOST", "postgres"),
         min_size=10,
-        port=int(os.getenv("PGPORT", "5433"))
+        port=int(os.getenv("PGPORT", "5432"))
     )
 
     # Keep notification schema in sync for existing environments that were
